@@ -13,3 +13,18 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+  postgres-aegis:
+    image: postgres:15-alpine
+    container_name: aegis-postgres
+    environment:
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: aegispassword
+      POSTGRES_DB: aegis
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "aegis"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
