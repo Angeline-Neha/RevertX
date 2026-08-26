@@ -1,0 +1,15 @@
+﻿version: "3.9"
+# Aegis project — Redis only. Python services run locally via uvicorn.
+# Port 6380 on host to avoid conflicts with any existing Redis on 6379.
+services:
+  redis-aegis:
+    image: redis:7-alpine
+    container_name: aegis-redis
+    ports:
+      - "6380:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

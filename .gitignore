@@ -1,0 +1,25 @@
+# Environment & secrets
+.env
+*.env
+
+# Scratch / temp test scripts
+scratch_*.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Node
+dashboard/node_modules/
+dashboard/dist/
+
+# Logs
+logs/
+*.log
+*.err
+
+# OS
+.DS_Store
+Thumbs.db
