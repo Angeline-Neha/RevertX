@@ -136,7 +136,7 @@ def _route_after_select(state: CompensationState) -> str:
     return "fetch_policy"
 
 
-def fetch_policy(state: CompensationState) -> dict:
+async def fetch_policy(state: CompensationState) -> dict:
     wid = state["workflow_id"]
     step = state["current_step"]
     merchant_id = step["merchant_id"]
@@ -149,8 +149,10 @@ def fetch_policy(state: CompensationState) -> dict:
 
     base_url = MERCHANT_URLS.get(merchant_id, "")
     try:
-        resp = httpx.get(f"{base_url}/policy", timeout=5.0)
-        policy_data = resp.json()
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url}/policy")
+            resp.raise_for_status()
+            policy_data = resp.json()
         policy_text = policy_data.get("policy", "")
         _trace(wid, "fetch_policy", "end", {"policy_text": policy_text})
         return {"policy_text": policy_text}
@@ -214,7 +216,7 @@ def compute_refund_amount_node(state: CompensationState) -> dict:
     return {"refund_amount": amount}
 
 
-def attempt_refund_node(state: CompensationState) -> dict:
+async def attempt_refund_node(state: CompensationState) -> dict:
     wid = state["workflow_id"]
     step = state["current_step"]
     merchant_id = step["merchant_id"]
@@ -229,6 +231,17 @@ def attempt_refund_node(state: CompensationState) -> dict:
 
     base_url = MERCHANT_URLS.get(merchant_id, "")
     results = state.get("compensation_results") or []
+    
+    import db.client as db
+    cb_state = await db.check_circuit_breaker(merchant_id)
+    if cb_state == "open":
+        await db.write_dlq_entry(wid, merchant_id, step["step_id"], refund_amount or 0.0, settlement_ref, "circuit_breaker_open")
+        result = {
+            "step_id": step["step_id"], "merchant_id": merchant_id, "outcome": "dlq", 
+            "amount_recovered": 0.0, "message": "Circuit breaker open. Sent to DLQ."
+        }
+        _trace(wid, "attempt_refund", "dlq_queued", result)
+        return {"compensation_results": results + [result]}
 
     if refund_amount is None and state.get("policy_terms") is not None:
         # Non-refundable — policy explicitly blocks it
@@ -252,8 +265,10 @@ def attempt_refund_node(state: CompensationState) -> dict:
         if merchant_id == "merchant_c":
             payload["amount"] = refund_amount
 
-        resp = httpx.post(f"{base_url}/refund", json=payload, timeout=5.0)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(f"{base_url}/refund", json=payload)
         data = resp.json()
+        await db.reset_circuit_breaker(merchant_id)
 
         if data.get("status") in ("refunded", "success"):
             result = {
@@ -272,6 +287,16 @@ def attempt_refund_node(state: CompensationState) -> dict:
                 "message": data.get("reason", "Merchant rejected the refund."),
             }
 
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        new_state = await db.record_merchant_failure(merchant_id)
+        await db.write_dlq_entry(wid, merchant_id, step["step_id"], refund_amount, settlement_ref, str(exc))
+        result = {
+            "step_id": step["step_id"],
+            "merchant_id": merchant_id,
+            "outcome": "dlq",
+            "amount_recovered": 0.0,
+            "message": f"Merchant error. DLQ queued. CB State: {new_state}",
+        }
     except Exception as exc:
         result = {
             "step_id": step["step_id"],
@@ -384,7 +409,7 @@ def generate_liability_report_node(state: CompensationState) -> dict:
 # Build and compile the graph
 # ---------------------------------------------------------------------------
 
-def build_graph() -> "CompiledGraph":  # type: ignore[name-defined]
+def build_graph(checkpointer=None) -> "CompiledGraph":  # type: ignore[name-defined]
     g = StateGraph(CompensationState)
 
     g.add_node("load_workflow_log", load_workflow_log)
@@ -436,7 +461,7 @@ def build_graph() -> "CompiledGraph":  # type: ignore[name-defined]
     g.add_edge("generate_udir_payload", END)
     g.add_edge("generate_liability_report", END)
 
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
 
 
 compiled_graph = build_graph()

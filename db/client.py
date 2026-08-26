@@ -50,6 +50,23 @@ async def run_migrations() -> None:
                 status_code INT,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS dlq_refunds (
+                id SERIAL PRIMARY KEY,
+                workflow_id VARCHAR(255),
+                merchant_id VARCHAR(255),
+                step_id VARCHAR(255),
+                amount FLOAT,
+                settlement_ref VARCHAR(255),
+                reason TEXT,
+                status VARCHAR(50) DEFAULT 'pending_retry',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS circuit_breakers (
+                merchant_id VARCHAR(255) PRIMARY KEY,
+                failures INT DEFAULT 0,
+                state VARCHAR(50) DEFAULT 'closed',
+                last_failure TIMESTAMP WITH TIME ZONE
+            );
             CREATE INDEX IF NOT EXISTS idx_txn_workflow ON transaction_steps(workflow_id);
         """)
     finally:
@@ -164,3 +181,32 @@ def get_workflow_steps_sync(workflow_id: str) -> list[Any]:
             return entries
     finally:
         conn.close()
+
+async def write_dlq_entry(workflow_id: str, merchant_id: str, step_id: str, amount: float, settlement_ref: str, reason: str):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO dlq_refunds (workflow_id, merchant_id, step_id, amount, settlement_ref, reason)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        """, workflow_id, merchant_id, step_id, amount, settlement_ref, reason)
+
+async def record_merchant_failure(merchant_id: str) -> str:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO circuit_breakers (merchant_id, failures, state, last_failure)
+            VALUES ($1, 1, 'closed', CURRENT_TIMESTAMP)
+            ON CONFLICT (merchant_id) DO UPDATE SET
+                failures = circuit_breakers.failures + 1,
+                state = CASE WHEN circuit_breakers.failures + 1 >= 3 THEN 'open' ELSE circuit_breakers.state END,
+                last_failure = CURRENT_TIMESTAMP
+            RETURNING state
+        """, merchant_id)
+        return row["state"]
+
+async def check_circuit_breaker(merchant_id: str) -> str:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT state FROM circuit_breakers WHERE merchant_id = $1", merchant_id)
+        return row["state"] if row else "closed"
+
+async def reset_circuit_breaker(merchant_id: str):
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE circuit_breakers SET failures = 0, state = 'closed' WHERE merchant_id = $1", merchant_id)

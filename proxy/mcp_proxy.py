@@ -145,7 +145,7 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
             "budget_used": current_used, "budget_limit": current_limit,
         })
         
-        background_tasks.add_task(_trigger_compensation, wid, failing_entry.model_dump())
+        await publish_compensation_request(wid, failing_entry.model_dump())
         await async_redis.aclose()
         
         return JSONResponse(status_code=403, content={
@@ -256,17 +256,12 @@ async def websocket_endpoint(websocket: WebSocket, workflow_id: str):
         await async_redis.aclose()
 
 
-async def _trigger_compensation(workflow_id: str, failing_step: dict) -> None:
-    from compensating_agent.graph import run_compensation
-    publish_event(workflow_id, "compensation_started", {
-        "workflow_id": workflow_id, "trigger": "mandate_limit_exceeded",
-    })
-    try:
-        result = await run_compensation(workflow_id, failing_step)
-        publish_event(workflow_id, "compensation_complete", {
-            "workflow_id": workflow_id,
-            "has_udir": result.get("udir_payload") is not None,
-            "has_liability_report": result.get("liability_report") is not None,
-        })
-    except Exception as exc:
-        publish_event(workflow_id, "compensation_error", {"error": str(exc)})
+async def publish_compensation_request(wid: str, failing_step: dict):
+    import aio_pika
+    connection = await aio_pika.connect_robust("amqp://guest:guest@localhost:5673/")
+    async with connection:
+        channel = await connection.channel()
+        await channel.default_exchange.publish(
+            aio_pika.Message(body=json.dumps({"workflow_id": wid, "failing_step": failing_step}).encode()),
+            routing_key="compensation_requests",
+        )
