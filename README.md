@@ -12,7 +12,7 @@ Aegis sits between an AI agent and payment APIs. When the agent's multi-step pay
 
 1. **Detects** the failure via deterministic reconciliation (expected vs actual)
 2. **Classifies** the fault — network/infrastructure vs agent logic — deterministically (zero LLM)
-3. **Compensates** — walks backward through the workflow log, reads merchant policies (the ONLY LLM call), and refunds what can be refunded
+3. **Compensates** — walks backward through the workflow log, reads merchant policies (via an isolated policy-extraction service — the only LLM call in the payment-critical path), and refunds what can be refunded
 4. **Routes** — generates either a UDIR-shaped dispute payload (network fault) or an Internal Liability Report (agent fault). Never both. Never wrong.
 
 ---
@@ -127,10 +127,11 @@ LangGraph Compensating Agent
 
 ## Key Design Invariants
 
-- **LLM call count: exactly 1** — `engine/policy_extractor.py` only
-- **LLM never does arithmetic** — `refund_math.compute_refund()` is pure Python
-- **Fault classifier has no LLM** — pure `if/elif` on raw gateway response codes
-- **Ambiguous → always `agent_fault`** — filing a false dispute is worse than under-filing
+- **LLM never touches the payment-critical path or does arithmetic** — `refund_math.compute_refund()` is pure Python; the fault classifier and reconciliation engine are pure `if/elif` on raw gateway response codes, no model involved.
+- **Two LLM calls, each isolated to its own single-purpose service, neither ever blocking payment logic:**
+  - `engine/policy_extractor.py`, served via `engine/policy_service.py` (port 8004) — reads a merchant's plain-English cancellation policy and extracts structured terms only (`refundable`, `penalty_percentage`, `conditions`). Never computes a ₹ figure. Fails safe to `refundable: false` on any parse failure.
+  - `engine/anomaly_detector.py`, served via `engine/anomaly_service.py` (port 8005) — flags statistically unusual compensation patterns for human review only. Purely advisory: nothing in the compensation graph gates a refund, a UDIR filing, or a liability report on this service's output, and it's called fire-and-forget (`asyncio.create_task`) so a slow or failing call never delays the liability report itself. Fails safe to `is_anomalous: false` on any error.
+- **Ambiguous fault classification → always `agent_fault`** — filing a false dispute is worse than under-filing.
 
 ---
 
@@ -138,9 +139,13 @@ LangGraph Compensating Agent
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | (required) | Google Gemini API key |
+| `GEMINI_API_KEY` | (required) | Google Gemini API key, used by both `policy_service` and `anomaly_service` |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6380` | Redis port (Aegis-only, not 6379) |
+| `POLICY_SERVICE_URL` | `http://localhost:8004` | Isolated policy-extraction LLM service |
+| `ANOMALY_SERVICE_URL` | `http://localhost:8005` | Isolated anomaly/triage LLM service (advisory only, non-blocking) |
+
+*A full environment-variable audit (Postgres, RabbitMQ, API keys, CORS) is tracked as Phase 3 of the fix plan — this table isn't complete yet, only updated for what changed in this phase.*
 
 ---
 

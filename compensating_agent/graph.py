@@ -21,6 +21,7 @@ WebSocket endpoint forwards to the frontend in real time.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -412,15 +413,6 @@ async def generate_liability_report_node(state: CompensationState) -> dict:
             if step_obj and getattr(step_obj, "actual", None):
                 total_unrecovered += getattr(step_obj.actual, "amount", 0.0)
 
-    from engine.anomaly_detector import flag_anomalies
-    
-    # We pass the results as a history summary
-    anomaly_result = await flag_anomalies(wid, results)
-    
-    if anomaly_result["is_anomalous"]:
-        publish_event(wid, "anomaly_detected", anomaly_result)
-        _trace(wid, "generate_liability_report", "anomaly_flagged", anomaly_result)
-
     report = LiabilityReport(
         workflow_id=wid,
         step_id=failing_step.get("step_id", ""),
@@ -448,7 +440,40 @@ async def generate_liability_report_node(state: CompensationState) -> dict:
         "payload": report,
     })
     _trace(wid, "generate_liability_report", "end", {"report": report})
+
+    # Advisory-only, non-blocking: the liability report above is already
+    # complete and published. The anomaly check runs as a background task
+    # against its own isolated service (engine/anomaly_service.py) with its
+    # own timeout, so a slow or failing LLM call can never delay a report a
+    # human reviewer actually needs. If it fails or times out, nothing about
+    # the liability report is affected — this only ever adds an extra flag.
+    asyncio.create_task(_check_anomalies_background(wid, results))
+
     return {"liability_report": report}
+
+
+async def _check_anomalies_background(wid: str, results: list[dict]) -> None:
+    """Fire-and-forget call to the isolated anomaly service. See module
+    docstring in engine/anomaly_service.py for why this is a separate
+    service rather than an inline import."""
+    anomaly_service_url = os.getenv("ANOMALY_SERVICE_URL", "http://localhost:8005")
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                f"{anomaly_service_url}/flag_anomalies",
+                json={"workflow_id": wid, "steps": results},
+            )
+            resp.raise_for_status()
+            anomaly_result = resp.json()
+    except Exception as exc:
+        _trace(wid, "anomaly_check", "error", {"error": str(exc)})
+        return
+
+    if anomaly_result.get("is_anomalous"):
+        publish_event(wid, "anomaly_detected", anomaly_result)
+        _trace(wid, "anomaly_check", "anomaly_flagged", anomaly_result)
+    else:
+        _trace(wid, "anomaly_check", "end", anomaly_result)
 
 
 # ---------------------------------------------------------------------------

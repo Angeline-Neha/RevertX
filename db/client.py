@@ -33,10 +33,16 @@ async def run_migrations() -> None:
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        # Unconditionally drop and create for testing
-        await conn.execute("DROP TABLE IF EXISTS transaction_steps CASCADE")
+        # IMPORTANT: this table is the system of record for every payment and
+        # refund Aegis has ever seen. It must NEVER be dropped as part of a
+        # normal service startup (both mcp_proxy's lifespan and worker.main()
+        # call run_migrations() on every boot). A destructive migration here
+        # silently erases the audit trail the whole system exists to produce.
+        # Table creation is idempotent; a genuine destructive reset is only
+        # available via reset_database_for_testing(), which nothing in the
+        # application startup path calls.
         await conn.execute("""
-            CREATE TABLE transaction_steps (
+            CREATE TABLE IF NOT EXISTS transaction_steps (
                     step_id VARCHAR(255),
                     workflow_id VARCHAR(255) NOT NULL,
                     merchant_id VARCHAR(255) NOT NULL,
@@ -49,8 +55,16 @@ async def run_migrations() -> None:
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (step_id, created_at)
                 ) PARTITION BY RANGE (created_at);
-                
-                CREATE TABLE transaction_steps_current_month PARTITION OF transaction_steps 
+            """)
+        # The default partition is created separately and guarded, since
+        # "CREATE TABLE ... PARTITION OF" has no direct "IF NOT EXISTS partition"
+        # shorthand across all supported Postgres versions; check pg_class first.
+        partition_exists = await conn.fetchrow(
+            "SELECT 1 FROM pg_class WHERE relname = 'transaction_steps_current_month'"
+        )
+        if not partition_exists:
+            await conn.execute("""
+                CREATE TABLE transaction_steps_current_month PARTITION OF transaction_steps
                     FOR VALUES FROM ('2020-01-01') TO ('2030-01-01');
             """)
         
@@ -82,6 +96,26 @@ async def run_migrations() -> None:
         """)
     finally:
         await conn.close()
+
+async def reset_database_for_testing() -> None:
+    """
+    Destructively drops and recreates transaction_steps.
+
+    This function exists ONLY for test fixtures that need a clean slate
+    between test runs. It must never be called from application startup
+    (mcp_proxy's lifespan, worker.main(), or any production entrypoint) —
+    doing so would silently destroy the live transaction ledger every time
+    a service restarts. If you're tempted to call this from anywhere other
+    than a test's setup/teardown, that's a sign you want run_migrations()
+    (idempotent, safe) instead.
+    """
+    conn = await asyncpg.connect(DSN)
+    try:
+        await conn.execute("DROP TABLE IF EXISTS transaction_steps CASCADE")
+    finally:
+        await conn.close()
+    await run_migrations()
+
 
 async def init_pool() -> None:
     global pool

@@ -73,3 +73,42 @@ def test_policy_service_decoupled():
     assert "httpx" in source and "8004" in source or "policy-extractor" in source, (
         "graph.py does not appear to be making an HTTP request to the isolated policy service."
     )
+
+
+def test_anomaly_service_decoupled():
+    """
+    Ensure graph.py no longer directly imports engine.anomaly_detector.
+
+    Phase 1 finding: a second LLM call (the anomaly/triage check) was added
+    directly inside generate_liability_report_node via
+    `from engine.anomaly_detector import flag_anomalies`, running LLM
+    inference in-process exactly like the original policy-extractor bug this
+    file's other test already guards against. It must go through its own
+    isolated service (engine/anomaly_service.py) instead, on its own port,
+    with its own timeout — never inline, and never blocking liability report
+    generation.
+    """
+    import inspect
+    from compensating_agent import graph
+
+    source = inspect.getsource(graph)
+
+    assert (
+        "from engine.anomaly_detector" not in source
+        and "import engine.anomaly_detector" not in source
+    ), (
+        "graph.py is still directly importing the anomaly detector, meaning "
+        "it is running a second LLM inference call in the same process as "
+        "payment-critical compensation logic."
+    )
+
+    assert "8005" in source and "anomaly" in source.lower(), (
+        "graph.py does not appear to be making an HTTP request to the "
+        "isolated anomaly service."
+    )
+
+    assert "asyncio.create_task" in source, (
+        "The anomaly check must be fire-and-forget (non-blocking) so a slow "
+        "or failing model call can never delay liability report generation, "
+        "which a human reviewer actually needs immediately."
+    )

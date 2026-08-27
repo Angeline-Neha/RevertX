@@ -49,3 +49,13 @@ services:
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     restart: unless-stopped
+
+  anomaly-detector:
+    build: .
+    container_name: aegis-anomaly-detector
+    command: python -m engine.anomaly_service
+    ports:
+      - "8005:8005"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    restart: unless-stopped

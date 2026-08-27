@@ -14,6 +14,7 @@ procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.
 
 print("Starting Services...")
 procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.policy_service:app", "--port", "8004"]))
+procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.anomaly_service:app", "--port", "8005"]))
 procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "proxy.mcp_proxy:app", "--port", "8000"]))
 procs.append(subprocess.Popen([sys.executable, "-m", "compensating_agent.worker"]))
 
