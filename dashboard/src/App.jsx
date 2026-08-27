@@ -38,8 +38,25 @@ export default function App() {
     setTerminalLines((prev) => [...prev.slice(-200), `[${ts}] ${msg}`]);
   }, []);
 
+  // Clears every piece of per-workflow state. Must run before connecting to
+  // ANY workflow_id (including the very first one on mount) — otherwise
+  // switching workflows (typing a new UUID, or reloading with a different
+  // #hash) leaves the previous run's log lines, node states, and reasoning
+  // stream sitting in place, and the new run's events just get appended on
+  // top of them instead of starting clean.
+  const resetWorkflowState = useCallback(() => {
+    setTerminalLines([]);
+    setNodeStates({});
+    setCompensationNodes([]);
+    setLlmStream("");
+    setMathLine(null);
+    setEndState(null);
+    setBudget({ used: 0, limit: 0 });
+  }, []);
+
   const connectWS = useCallback((wid) => {
     if (wsRef.current) wsRef.current.close();
+    resetWorkflowState();
     const proxyApiKey = import.meta.env.VITE_PROXY_API_KEY || "test-key-123";
     const ws = new WebSocket(`ws://localhost:8000/ws/${wid}?token=${proxyApiKey}`);
     wsRef.current = ws;
@@ -60,7 +77,7 @@ export default function App() {
         handleEvent(msg);
       } catch {}
     };
-  }, [log]);
+  }, [log, resetWorkflowState]);
 
   function handleEvent(msg) {
     const { event_type, data } = msg;
