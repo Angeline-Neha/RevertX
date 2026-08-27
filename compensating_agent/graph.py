@@ -29,9 +29,8 @@ import httpx
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
-from engine.fault_classifier import classify_fault
-from engine.policy_extractor import extract_policy_terms
 from proxy.schemas import FaultClassification, LiabilityReport, UDIRPayload
+from engine.fault_classifier import classify_fault
 from refund_math import compute_refund
 from state_log.redis_client import (
     get_workflow_steps,
@@ -169,18 +168,31 @@ def _route_after_fetch_policy(state: CompensationState) -> str:
 
 async def extract_policy_terms_node(state: CompensationState) -> dict:
     wid = state["workflow_id"]
-    policy_text = state["policy_text"] or ""
+    policy_text = state.get("policy_text")
+    if not policy_text:
+        return {"policy_terms": None}
 
-    _trace(wid, "extract_policy_terms", "start", {"policy_text": policy_text})
-
-    async def _stream_cb(chunk: str) -> None:
-        publish_event(wid, "llm_stream_chunk", {"chunk": chunk})
-
-    terms = await extract_policy_terms(policy_text, stream_callback=_stream_cb)
-    terms_dict = terms.to_dict()
-
-    _trace(wid, "extract_policy_terms", "end", {"terms": terms_dict})
-    return {"policy_terms": terms_dict}
+    _trace(wid, "extract_policy", "start", {})
+    
+    # Decoupled via HTTP microservice
+    policy_url = os.getenv("POLICY_SERVICE_URL", "http://localhost:8004")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(f"{policy_url}/extract", json={"policy_text": policy_text})
+            resp.raise_for_status()
+            terms_data = resp.json()
+            
+            # Reconstruct the dict matching what downstream nodes expect
+            policy_terms = {
+                "refundable": terms_data.get("refundable", False),
+                "penalty_percentage": terms_data.get("penalty_percentage"),
+                "conditions": terms_data.get("conditions", "")
+            }
+            _trace(wid, "extract_policy", "end", policy_terms)
+            return {"policy_terms": policy_terms}
+    except Exception as exc:
+        _trace(wid, "extract_policy", "error", {"error": str(exc)})
+        return {"policy_terms": {"refundable": False, "penalty_percentage": None, "conditions": "Fallback due to extraction service failure"}}
 
 
 def compute_refund_amount_node(state: CompensationState) -> dict:

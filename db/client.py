@@ -32,18 +32,29 @@ async def run_migrations() -> None:
                 status VARCHAR(50) DEFAULT 'active',
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE TABLE IF NOT EXISTS transaction_steps (
-                step_id VARCHAR(255) PRIMARY KEY,
-                workflow_id VARCHAR(255) REFERENCES workflows(workflow_id),
-                merchant_id VARCHAR(255),
-                expected JSONB,
-                actual JSONB,
-                raw_gateway_response JSONB,
-                status VARCHAR(50),
-                idempotency_key VARCHAR(255) UNIQUE,
-                full_entry JSONB,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-            );
+        """)
+        # Unconditionally drop and create for testing
+        await conn.execute("DROP TABLE IF EXISTS transaction_steps CASCADE")
+        await conn.execute("""
+            CREATE TABLE transaction_steps (
+                    step_id VARCHAR(255),
+                    workflow_id VARCHAR(255) NOT NULL,
+                    merchant_id VARCHAR(255) NOT NULL,
+                    expected JSONB,
+                    actual JSONB,
+                    raw_gateway_response JSONB,
+                    status VARCHAR(50),
+                    idempotency_key VARCHAR(255),
+                    full_entry JSONB,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (step_id, created_at)
+                ) PARTITION BY RANGE (created_at);
+                
+                CREATE TABLE transaction_steps_current_month PARTITION OF transaction_steps 
+                    FOR VALUES FROM ('2020-01-01') TO ('2030-01-01');
+            """)
+        
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS idempotency_keys (
                 idempotency_key VARCHAR(255) PRIMARY KEY,
                 response_body JSONB,

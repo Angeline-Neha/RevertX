@@ -107,6 +107,15 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
 
     async_redis = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     
+    # 0. Rate limiting (max 50 requests per minute per workflow_id)
+    rl_key = f"rate_limit:{wid}"
+    count = await async_redis.incr(rl_key)
+    if count == 1:
+        await async_redis.expire(rl_key, 60)
+    if count > 50:
+        await async_redis.aclose()
+        return JSONResponse(status_code=429, content={"error": "Too Many Requests"})
+
     # 1. Idempotency Check (Redis Fast Path)
     cached = await async_redis.get(f"idem:{idem_key}")
     if cached:
