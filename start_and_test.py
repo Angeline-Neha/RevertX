@@ -11,7 +11,7 @@ procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.
 procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.policy_service:app", "--port", "8004"]))
 procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.anomaly_service:app", "--port", "8005"]))
 procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "proxy.mcp_proxy:app", "--port", "8000"]))
-worker_proc = subprocess.Popen([sys.executable, "run_worker_debug.py"], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+worker_proc = subprocess.Popen([sys.executable, "run_worker.py", "--debug"], stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 procs.append(worker_proc)
 
 time.sleep(5)

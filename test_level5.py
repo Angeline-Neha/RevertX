@@ -101,6 +101,12 @@ async def test_policy_service_decoupled(monkeypatch):
             )
 
     monkeypatch.setattr(graph_mod.httpx, "AsyncClient", _Client)
+    # extract_policy_terms_node also calls _trace() -> write_compensation_trace,
+    # which is a real Redis call bound into graph.py's own namespace at import
+    # time (`from state_log.redis_client import write_compensation_trace`).
+    # Mock it here too so this test genuinely needs no live Redis, matching
+    # what it already does for the HTTP call.
+    monkeypatch.setattr(graph_mod, "write_compensation_trace", lambda *a, **k: None)
 
     state = {
         "workflow_id": "wf-policy-test",
@@ -137,6 +143,7 @@ async def test_policy_service_failure_falls_back_safely(monkeypatch):
             raise RuntimeError("connection refused")
 
     monkeypatch.setattr(graph_mod.httpx, "AsyncClient", _DeadClient)
+    monkeypatch.setattr(graph_mod, "write_compensation_trace", lambda *a, **k: None)
 
     state = {"workflow_id": "wf-policy-fail", "policy_text": "some policy"}
     result = await graph_mod.extract_policy_terms_node(state)
@@ -185,6 +192,7 @@ async def test_anomaly_service_decoupled(monkeypatch):
 
     monkeypatch.setattr(graph_mod.httpx, "AsyncClient", _SlowAnomalyClient)
     monkeypatch.setattr(graph_mod, "publish_event", lambda wid, kind, payload: published.append((wid, kind, payload)))
+    monkeypatch.setattr(graph_mod, "write_compensation_trace", lambda *a, **k: None)
 
     import state_log.redis_client as redis_client_mod
     monkeypatch.setattr(redis_client_mod, "get_workflow_steps", lambda _wid: [])
@@ -245,6 +253,7 @@ async def test_anomaly_service_failure_does_not_affect_liability_report(monkeypa
     published = []
     monkeypatch.setattr(graph_mod.httpx, "AsyncClient", _DeadAnomalyClient)
     monkeypatch.setattr(graph_mod, "publish_event", lambda wid, kind, payload: published.append((wid, kind, payload)))
+    monkeypatch.setattr(graph_mod, "write_compensation_trace", lambda *a, **k: None)
 
     import state_log.redis_client as redis_client_mod
     monkeypatch.setattr(redis_client_mod, "get_workflow_steps", lambda _wid: [])

@@ -12,18 +12,37 @@ Aegis sits between an AI agent and payment APIs. When the agent's multi-step pay
 
 1. **Detects** the failure via deterministic reconciliation (expected vs actual)
 2. **Classifies** the fault — network/infrastructure vs agent logic — deterministically (zero LLM)
-3. **Compensates** — walks backward through the workflow log, reads merchant policies (via an isolated policy-extraction service — the only LLM call in the payment-critical path), and refunds what can be refunded
+3. **Compensates** — walks backward through the workflow log, reads merchant policies (via an isolated policy-extraction LLM service), and refunds what can be refunded, with a second isolated LLM service flagging unusual patterns for human review afterward (advisory-only, never gating a refund or dispute)
 4. **Routes** — generates either a UDIR-shaped dispute payload (network fault) or an Internal Liability Report (agent fault). Never both. Never wrong.
 
 ---
 
 ## Quick Start
 
-### 1. Start Redis (Aegis-only, port 6380)
+The system has three pieces of infrastructure (Postgres, Redis, RabbitMQ)
+and six Python processes (3 mock merchants + 2 isolated LLM services + the
+proxy), plus a background worker and the dashboard. `run_demo.py` starts
+everything for you and is the easiest way to see it work; the steps below
+are what it's doing under the hood, for when you need to run something by
+hand or debug a piece in isolation.
+
+### 0. Configure environment variables
 
 ```bash
-docker compose up -d
+cp .env.example .env
+# fill in GEMINI_API_KEY at minimum — everything else has a working default
 ```
+
+### 1. Start infrastructure (Postgres, Redis, RabbitMQ)
+
+```bash
+docker compose up -d redis-aegis postgres-aegis rabbitmq-aegis
+```
+
+This is Redis on port **6380** (not the default 6379, so it won't clash
+with anything else on your machine), Postgres on port **5433**, and
+RabbitMQ on port **5673**. `db/client.py`'s migrations run automatically
+the first time the proxy or worker starts — no manual schema setup needed.
 
 ### 2. Install Python dependencies
 
@@ -31,9 +50,9 @@ docker compose up -d
 pip install -r requirements.txt
 ```
 
-### 3. Start the four services (separate terminals)
+### 3. Start the six application services (separate terminals)
 
-```powershell
+```bash
 # Terminal 1 — Merchant A (CRM)
 uvicorn mock_merchants.merchant_a_crm:app --port 8001
 
@@ -43,26 +62,64 @@ uvicorn mock_merchants.merchant_b_hotel:app --port 8002
 # Terminal 3 — Merchant C (Domain)
 uvicorn mock_merchants.merchant_c_domain:app --port 8003
 
-# Terminal 4 — Aegis MCP Proxy (includes WebSocket)
+# Terminal 4 — Policy-extraction LLM service (isolated, single-purpose)
+uvicorn engine.policy_service:app --port 8004
+
+# Terminal 5 — Anomaly/triage LLM service (isolated, single-purpose, advisory-only)
+uvicorn engine.anomaly_service:app --port 8005
+
+# Terminal 6 — Aegis MCP Proxy (includes the WebSocket for the dashboard)
 uvicorn proxy.mcp_proxy:app --port 8000
 ```
 
-### 4. Start the dashboard
+`engine/policy_service.py` and `engine/anomaly_service.py` can also run as
+Docker containers (`policy-extractor` / `anomaly-detector` in
+`docker-compose.yml`) if you'd rather not manage two more local terminals —
+`run_demo.py` runs them locally via uvicorn instead, for faster
+edit-and-restart iteration during development.
+
+### 4. Start the compensating-agent worker (separate terminal)
+
+```bash
+python -m compensating_agent.worker
+# or: python run_worker.py [--debug]
+```
+
+This is the process that actually runs the LangGraph compensation saga
+when a workflow fails. It builds a real Postgres-backed checkpointer at
+startup — see [Key Design Invariants](#key-design-invariants) below for
+why that matters.
+
+### 5. Start the dashboard
 
 ```bash
 cd dashboard
+echo "VITE_PROXY_API_KEY=test-key-123" > .env   # must match PROXY_API_KEY
 npm install
 npm run dev
 # Open http://localhost:5173
 ```
 
-### 5. Run the demo
+### 6. Run the demo
 
 ```bash
-python primary_agent/procurement_agent.py
+python -m primary_agent.procurement_agent
 ```
 
-Copy the printed **workflow UUID**, paste it into the dashboard, and watch live.
+Copy the printed **workflow UUID**, paste it into the dashboard, and watch
+live.
+
+### All of the above, one command
+
+```bash
+python run_demo.py
+```
+
+Starts infrastructure, waits for it to actually be reachable (fails fast
+with a clear message if it isn't, rather than 15 seconds into a demo that's
+about to fail confusingly), starts all six application services plus the
+worker, waits for those to come up, then runs the demo client automatically
+and tears everything down afterward.
 
 ---
 
@@ -109,19 +166,29 @@ Tests assert:
 
 ```
 Primary Agent
-    ↓ POST /pay
+    ↓ POST /pay  (X-API-Key required)
 Aegis MCP Proxy (port 8000)
-    ├── Writes TransactionLogEntry to Redis (port 6380)
+    ├── Writes TransactionLogEntry to Postgres (durable ledger, port 5433)
+    ├── Publishes events to Redis (port 6380) → dashboard WebSocket
     ├── Runs reconciliation (deterministic)
-    ├── On budget 403 → triggers LangGraph compensating agent
-    └── WebSocket /ws/{workflow_id} → dashboard
-         
-LangGraph Compensating Agent
-    load_workflow_log → select_step → fetch_policy → extract_terms (Gemini) 
-    → compute_refund (deterministic) → attempt_refund → classify_and_route
-         → network_fault → UDIR payload
-         → agent_fault  → Liability report (NO dispute filed)
+    ├── On budget 403 → publishes to RabbitMQ (port 5673) compensation_requests
+    └── WebSocket /ws/{workflow_id}?token=... → dashboard
+
+Compensating-Agent Worker (separate process, consumes RabbitMQ)
+    Builds its LangGraph with a real Postgres-backed checkpointer at startup.
+    load_workflow_log → select_step → fetch_policy
+        → extract_terms (HTTP → policy-extractor service, port 8004, Gemini)
+        → compute_refund (deterministic) → attempt_refund → classify_and_route
+             → network_fault → UDIR payload
+             → agent_fault  → Liability report (NO dispute filed)
+                 → fire-and-forget HTTP → anomaly-detector service (port 8005, Gemini)
+                     → advisory-only; never blocks or gates the liability report
 ```
+
+Crash recovery: if the worker process dies mid-saga, RabbitMQ redelivers
+the still-unacked message to whichever worker consumes it next, and the
+resumed run picks up from the last completed checkpoint instead of
+restarting the whole saga. See Key Design Invariants below.
 
 ---
 
@@ -138,15 +205,19 @@ LangGraph Compensating Agent
 
 ## Environment Variables
 
+See `.env.example` for the full list with explanations — copy it to `.env`
+to get started. Summary:
+
 | Variable | Default | Description |
 |---|---|---|
 | `GEMINI_API_KEY` | (required) | Google Gemini API key, used by both `policy_service` and `anomaly_service` |
-| `REDIS_HOST` | `localhost` | Redis host |
-| `REDIS_PORT` | `6380` | Redis port (Aegis-only, not 6379) |
+| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6380` | Aegis-only Redis instance |
+| `PG_USER` / `PG_PASSWORD` / `PG_DB` / `PG_HOST` / `PG_PORT` | `aegis` / `aegispassword` / `aegis` / `localhost` / `5433` | Durable transaction ledger + LangGraph checkpoints |
+| `PROXY_API_KEY` | `test-key-123` | Required `X-API-Key` header / WebSocket `?token=` value. This is the canonical name — the demo client and the dashboard both resolve to this same value by default. |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` | CORS allow-list, comma-separated |
 | `POLICY_SERVICE_URL` | `http://localhost:8004` | Isolated policy-extraction LLM service |
 | `ANOMALY_SERVICE_URL` | `http://localhost:8005` | Isolated anomaly/triage LLM service (advisory only, non-blocking) |
-
-*A full environment-variable audit (Postgres, RabbitMQ, API keys, CORS) is tracked as Phase 3 of the fix plan — this table isn't complete yet, only updated for what changed in this phase.*
+| `VITE_PROXY_API_KEY` (dashboard's own `.env`, not the root one) | `test-key-123` | Must match `PROXY_API_KEY` or the dashboard's WebSocket connection gets rejected |
 
 ---
 
@@ -154,26 +225,38 @@ LangGraph Compensating Agent
 
 ```
 aegis/
-├── mock_merchants/          FastAPI apps for 3 mock merchants
+├── .env.example              Every env var actually read by the code
+├── docker-compose.yml        Redis, Postgres, RabbitMQ + optional containerized LLM services
+├── mock_merchants/           FastAPI apps for 3 mock merchants
 ├── proxy/
-│   ├── schemas.py           Pydantic models (Sections 5.1-5.5)
-│   └── mcp_proxy.py         Intercepts payments, WebSocket, budget tracking
+│   ├── schemas.py            Pydantic models (Sections 5.1-5.5)
+│   └── mcp_proxy.py          Intercepts payments, auth, CORS, WebSocket, budget tracking
+├── db/
+│   └── client.py             Postgres pool, migrations, ledger + circuit-breaker queries
 ├── engine/
-│   ├── reconciliation.py    Deterministic expected vs actual comparison
-│   ├── fault_classifier.py  Deterministic if/elif fault classification
-│   └── policy_extractor.py  The ONE Gemini call (gemini-2.5-flash, JSON mode)
-├── refund_math.py           Pure arithmetic (no LLM)
+│   ├── reconciliation.py     Deterministic expected vs actual comparison
+│   ├── fault_classifier.py   Deterministic if/elif fault classification
+│   ├── policy_extractor.py   LLM call #1 (Gemini) — policy term extraction only
+│   ├── policy_service.py     Isolated FastAPI service wrapping policy_extractor (port 8004)
+│   ├── anomaly_detector.py   LLM call #2 (Gemini) — advisory anomaly/triage flag only
+│   └── anomaly_service.py    Isolated FastAPI service wrapping anomaly_detector (port 8005)
+├── refund_math.py            Pure arithmetic (no LLM)
 ├── compensating_agent/
-│   └── graph.py             LangGraph StateGraph (8 nodes)
+│   ├── graph.py               LangGraph StateGraph, real Postgres-backed checkpointer
+│   └── worker.py               RabbitMQ consumer; the process that actually runs the graph
+├── run_worker.py              Convenience launcher for the worker (--debug for verbose logs)
+├── run_demo.py                One-command: infra + all services + demo, with pre-flight checks
+├── run_bg.py                  Starts all app services in the background (no infra, no demo run)
 ├── primary_agent/
-│   └── procurement_agent.py Demo: CRM + Hotel + budget-busting third payment
+│   └── procurement_agent.py   Demo: CRM + Hotel + budget-busting third payment
 ├── state_log/
-│   └── redis_client.py      Redis on port 6380
+│   └── redis_client.py        Redis on port 6380 — events + short-lived state
 ├── test_harness/
 │   ├── generate_scenarios.py  50 synthetic records with ground truth
 │   └── run_batch_eval.py      Metrics: match rate, false-dispute rate, etc.
-├── test_engine.py             Unit tests for fault classifier
+├── test_engine.py             Unit tests for the deterministic fault classifier
+├── test_level1*.py – test_level6.py   Regression tests per redesign-doc milestone
 ├── dashboard/                 React + Vite + React Flow + Framer Motion
 ├── results.json               Committed batch eval output
-└── docker-compose.yml         Redis on port 6380 only
+└── docker-compose.yml         Redis, Postgres, RabbitMQ, + optional LLM-service containers
 ```

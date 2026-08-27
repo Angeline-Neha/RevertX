@@ -31,12 +31,20 @@ async def test_structured_logs():
     assert parsed["event"] == "test_message"
 
 @pytest.mark.asyncio
-async def test_false_dispute_alert():
+async def test_false_dispute_alert(monkeypatch):
     """
     Ensure the false dispute metric increments when a 4xx error is routed to network_fault.
     """
     from compensating_agent.graph import classify_and_route_node
-    
+    from compensating_agent import graph as graph_mod
+
+    # classify_and_route_node calls _trace() -> write_compensation_trace,
+    # a real Redis call bound into graph.py's own namespace at import time.
+    # Mock it so this test needs no live Redis, same gap fixed in
+    # test_level5.py's Phase 2.4 tests.
+    monkeypatch.setattr(graph_mod, "write_compensation_trace", lambda *a, **k: None)
+    monkeypatch.setattr(graph_mod, "publish_event", lambda *a, **k: None)
+
     state = {
         "workflow_id": "fd-test-1",
         "failing_step": {

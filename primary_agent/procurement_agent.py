@@ -28,7 +28,11 @@ else:
 import httpx
 
 PROXY_URL = "http://localhost:8000"
-API_KEY = os.getenv("API_KEY", "test-key-123")
+# PROXY_API_KEY is the canonical variable name — it's what proxy/mcp_proxy.py
+# itself reads. API_KEY is kept only as a fallback for anyone with an older
+# .env; if both are unset, this still matches the proxy's own default so the
+# demo works out of the box. See .env.example for the full explanation.
+API_KEY = os.getenv("PROXY_API_KEY") or os.getenv("API_KEY", "test-key-123")
 HEADERS = {"X-API-Key": API_KEY}
 
 

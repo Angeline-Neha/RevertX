@@ -40,7 +40,8 @@ export default function App() {
 
   const connectWS = useCallback((wid) => {
     if (wsRef.current) wsRef.current.close();
-    const ws = new WebSocket(`ws://localhost:8000/ws/${wid}?token=test-key-123`);
+    const proxyApiKey = import.meta.env.VITE_PROXY_API_KEY || "test-key-123";
+    const ws = new WebSocket(`ws://localhost:8000/ws/${wid}?token=${proxyApiKey}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
