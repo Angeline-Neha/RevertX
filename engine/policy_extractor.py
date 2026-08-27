@@ -76,12 +76,12 @@ class PolicyTerms:
 _FAIL_SAFE = PolicyTerms(
     refundable=False,
     penalty_percentage=None,
-    conditions="Failed to parse policy after 2 attempts â€” defaulting to non-refundable (fail safe).",
+    conditions="Failed to parse policy after 2 attempts — defaulting to non-refundable (fail safe).",
 )
 
 
 def _sync_stream(prompt: str) -> tuple[str, list[str]]:
-    """Sync Gemini streaming â€” runs in a thread via asyncio.to_thread()."""
+    """Sync Gemini streaming — runs in a thread via asyncio.to_thread()."""
     client = _get_client()
     full_text = ""
     chunks: list[str] = []

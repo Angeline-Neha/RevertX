@@ -117,6 +117,36 @@ async def reset_database_for_testing() -> None:
     await run_migrations()
 
 
+async def reset_workflow(workflow_id: str) -> None:
+    """
+    Clears state for exactly ONE workflow_id — its `workflows` row (budget
+    tracking) and its `transaction_steps` rows (settlement history) — and
+    nothing else. Unlike reset_database_for_testing(), this never touches
+    the schema and never affects any other workflow's data.
+
+    Exists for a real gap: create_workflow() uses
+    `INSERT ... ON CONFLICT DO NOTHING`, so if a workflow_id is deliberately
+    reused (e.g. primary_agent/procurement_agent.py accepts one via CLI arg
+    so a demo operator can keep the same dashboard URL across re-runs),
+    budget_used from the previous run silently persists. Every payment in
+    the new run then gets rejected as MANDATE EXCEEDED against stale
+    leftover budget, even though nothing in the new run actually spent it.
+
+    Called ONLY from procurement_agent.py's explicit-workflow_id path (see
+    run_procurement()) — never from create_workflow() or any code path that
+    handles a server-generated workflow_id, since those are never reused
+    and must keep their real history intact.
+    """
+    conn = await asyncpg.connect(DSN)
+    try:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM transaction_steps WHERE workflow_id = $1", workflow_id)
+            await conn.execute("DELETE FROM dlq_refunds WHERE workflow_id = $1", workflow_id)
+            await conn.execute("DELETE FROM workflows WHERE workflow_id = $1", workflow_id)
+    finally:
+        await conn.close()
+
+
 async def init_pool() -> None:
     global pool
     pool = await asyncpg.create_pool(DSN)
