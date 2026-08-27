@@ -480,7 +480,23 @@ async def _check_anomalies_background(wid: str, results: list[dict]) -> None:
 # Build and compile the graph
 # ---------------------------------------------------------------------------
 
-def build_graph(checkpointer=None) -> "CompiledGraph":  # type: ignore[name-defined]
+def build_graph(
+    checkpointer=None, interrupt_after: list[str] | None = None
+) -> "CompiledGraph":  # type: ignore[name-defined]
+    """
+    checkpointer: pass a real (e.g. AsyncPostgresSaver) instance in production
+    so a run's state survives a process crash. Left as None here only for
+    callers that genuinely don't need persistence (e.g. a graph object built
+    purely to inspect topology). The worker is the one production call site
+    and it always supplies a real checkpointer — see worker.py::main().
+
+    interrupt_after: test-only hook. Passed straight through to g.compile().
+    Lets a test force the graph to pause after a named node, so it can
+    simulate "the process died right here" without actually killing anything,
+    then resume against a *freshly built* graph object sharing the same
+    checkpointer/thread_id to prove the resume path — not just the keyword's
+    presence — actually works. Production callers never set this.
+    """
     g = StateGraph(CompensationState)
 
     g.add_node("load_workflow_log", load_workflow_log)
@@ -532,14 +548,43 @@ def build_graph(checkpointer=None) -> "CompiledGraph":  # type: ignore[name-defi
     g.add_edge("generate_udir_payload", END)
     g.add_edge("generate_liability_report", END)
 
-    return g.compile(checkpointer=checkpointer)
+    return g.compile(checkpointer=checkpointer, interrupt_after=interrupt_after)
 
 
+# Uncheckpointed by default. Kept for any lightweight/introspection use that
+# has no business touching Postgres. The real production path (worker.py)
+# builds its own graph with a real checkpointer at startup and passes it into
+# run_compensation() explicitly — see main() in worker.py.
 compiled_graph = build_graph()
 
 
-async def run_compensation(workflow_id: str, failing_step: dict) -> dict:
-    """Entry point called by mcp_proxy as a background task."""
+async def run_compensation(
+    workflow_id: str, failing_step: dict, graph: "CompiledGraph | None" = None
+) -> dict:
+    """
+    Entry point called by the worker after consuming a compensation_requests
+    message (or directly by tests).
+
+    Resumability: the workflow_id is used as the LangGraph thread_id. If
+    `graph` was compiled with a real checkpointer and a checkpoint already
+    exists for this thread (i.e. a previous run of this exact workflow_id
+    got partway through before the process died), this resumes from the
+    last completed node instead of re-running load_workflow_log and
+    re-attempting already-completed undo steps — which would double-refund
+    whatever had already succeeded. If no checkpoint exists yet, this is a
+    fresh run and starts normally from the initial state.
+    """
+    g = graph if graph is not None else compiled_graph
+    config = {"configurable": {"thread_id": workflow_id}}
+
+    if g.checkpointer is not None:
+        existing = await g.aget_state(config)
+        if existing and existing.values:
+            # A checkpoint already exists for this workflow_id — a prior
+            # attempt got partway through. Passing None as input resumes
+            # from the last completed superstep rather than restarting.
+            return await g.ainvoke(None, config)
+
     initial_state = CompensationState(
         workflow_id=workflow_id,
         failing_step=failing_step,
@@ -553,5 +598,4 @@ async def run_compensation(workflow_id: str, failing_step: dict) -> dict:
         udir_payload=None,
         liability_report=None,
     )
-    result = await compiled_graph.ainvoke(initial_state)
-    return result
+    return await g.ainvoke(initial_state, config)

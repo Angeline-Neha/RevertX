@@ -9,8 +9,16 @@ pytest>=8.0.0
 python-dotenv>=1.0.0
 websockets>=12.0
 
+# Three different Postgres drivers, each for a real reason, not redundancy:
+#   asyncpg        - db/client.py's async pool (proxy, most of the app)
+#   psycopg2-binary - db/client.py's *sync* helpers (used inside the
+#                     LangGraph compensating-agent nodes, which are easier
+#                     to keep sync for a couple of call sites)
+#   psycopg[binary] (v3) - required by langgraph-checkpoint-postgres's
+#                     AsyncPostgresSaver; it does not work with psycopg2.
 asyncpg>=0.29.0
 psycopg2-binary>=2.9.9
+psycopg[binary]>=3.1.0
 
 aio-pika>=9.0.0
 langgraph-checkpoint-postgres>=2.0.0
