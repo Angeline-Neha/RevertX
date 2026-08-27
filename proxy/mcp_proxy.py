@@ -14,9 +14,10 @@ from contextlib import asynccontextmanager
 import httpx
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Security, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 
 load_dotenv()
@@ -37,6 +38,8 @@ import db.client as db
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
+PROXY_API_KEY = os.getenv("PROXY_API_KEY", "test-key-123")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 
 MERCHANT_URLS: dict[str, str] = {
     "merchant_a": "http://localhost:8001",
@@ -50,6 +53,13 @@ MERCHANT_PAYEES: dict[str, str] = {
     "merchant_c": "Domain Registrar",
 }
 
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
+
+def verify_api_key(api_key: str = Security(api_key_header)):
+    if api_key != PROXY_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return api_key
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.run_migrations()
@@ -60,7 +70,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Aegis MCP Proxy", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -78,7 +88,7 @@ class PayRequest(BaseModel):
     idempotency_key: str
 
 
-@app.post("/init_workflow")
+@app.post("/init_workflow", dependencies=[Depends(verify_api_key)])
 async def init_workflow(req: InitWorkflowRequest):
     await db.create_workflow(req.workflow_id, req.budget_limit)
     publish_event(req.workflow_id, "workflow_init", {
@@ -88,7 +98,7 @@ async def init_workflow(req: InitWorkflowRequest):
     return {"status": "ok", "workflow_id": req.workflow_id, "budget_limit": req.budget_limit}
 
 
-@app.post("/pay")
+@app.post("/pay", dependencies=[Depends(verify_api_key)])
 async def pay(req: PayRequest, background_tasks: BackgroundTasks):
     wid = req.workflow_id
     merchant_id = req.merchant_id
@@ -233,14 +243,17 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
     return response_data
 
 
-@app.get("/workflow/{workflow_id}")
+@app.get("/workflow/{workflow_id}", dependencies=[Depends(verify_api_key)])
 def get_workflow(workflow_id: str):
     steps = get_workflow_steps(workflow_id)
     return {"workflow_id": workflow_id, "steps": [s.model_dump() for s in steps]}
 
 
 @app.websocket("/ws/{workflow_id}")
-async def websocket_endpoint(websocket: WebSocket, workflow_id: str):
+async def websocket_endpoint(websocket: WebSocket, workflow_id: str, token: str = Query(None)):
+    if token != PROXY_API_KEY:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     async_redis = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     pubsub = async_redis.pubsub()

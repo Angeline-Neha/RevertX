@@ -1,4 +1,4 @@
-"""
+﻿"""
 test_level1.py
 Level 1 regression tests.
 """
@@ -24,10 +24,10 @@ async def test_budget_race_is_closed():
         WID = f"race-test-{uuid.uuid4().hex[:8]}"
         
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            await client.post("/init_workflow", json={"workflow_id": WID, "budget_limit": 10000.0})
+            await client.post("/init_workflow", headers={"X-API-Key": "test-key-123"}, json={"workflow_id": WID, "budget_limit": 10000.0})
             
             async def attempt_payment():
-                return await client.post("/pay", json={
+                return await client.post("/pay", headers={"X-API-Key": "test-key-123"}, json={
                     "workflow_id": WID,
                     "merchant_id": "merchant_a",
                     "idempotency_key": str(uuid.uuid4()),
@@ -53,7 +53,7 @@ async def test_idempotency_key_deduplication():
         idem_key = str(uuid.uuid4())
         
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            await client.post("/init_workflow", json={"workflow_id": WID, "budget_limit": 5000.0})
+            await client.post("/init_workflow", headers={"X-API-Key": "test-key-123"}, json={"workflow_id": WID, "budget_limit": 5000.0})
             
             payload = {
                 "workflow_id": WID,
@@ -62,9 +62,9 @@ async def test_idempotency_key_deduplication():
                 "expected": {"amount": 1000.0, "currency": "INR", "payee": "CRM", "item": "test"}
             }
             
-            res1 = await client.post("/pay", json=payload)
+            res1 = await client.post("/pay", headers={"X-API-Key": "test-key-123"}, json=payload)
             
-            res2 = await client.post("/pay", json=payload)
+            res2 = await client.post("/pay", headers={"X-API-Key": "test-key-123"}, json=payload)
             assert res2.status_code == res1.status_code
             assert res2.json() == res1.json()
             
