@@ -83,4 +83,12 @@ async def main() -> None:
                 await db.close_pool()
 
 if __name__ == "__main__":
+    import sys
+
+    if sys.platform == "win32":
+        # psycopg's async connection cannot run under Windows' default
+        # ProactorEventLoop (used by asyncio.run() since Python 3.8+ on
+        # Windows). Force the Selector-based loop instead.
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     asyncio.run(main())
