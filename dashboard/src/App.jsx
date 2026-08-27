@@ -40,7 +40,7 @@ export default function App() {
 
   const connectWS = useCallback((wid) => {
     if (wsRef.current) wsRef.current.close();
-    const ws = new WebSocket(`ws://localhost:8000/ws/${wid}`);
+    const ws = new WebSocket(`ws://localhost:8000/ws/${wid}?token=test-key-123`);
     wsRef.current = ws;
 
     ws.onopen = () => {

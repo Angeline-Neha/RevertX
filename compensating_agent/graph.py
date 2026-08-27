@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional
+import os
 
 import httpx
 from langgraph.graph import StateGraph, END
@@ -399,13 +400,17 @@ def generate_udir_payload_node(state: CompensationState) -> dict:
 async def generate_liability_report_node(state: CompensationState) -> dict:
     wid = state["workflow_id"]
     _trace(wid, "generate_liability_report", "start", {})
-    failing_step = state["current_step"]
+    failing_step = state["failing_step"]
     results = state.get("compensation_results") or []
-    total_unrecovered = sum(
-        failing_step["actual"]["amount"] - r.get("amount_recovered", 0.0)
-        for r in results
-        if r.get("outcome") in ("error", "rejected", "non_refundable", "dlq")
-    )
+    
+    from state_log.redis_client import get_workflow_steps
+    all_steps = get_workflow_steps(wid)
+    total_unrecovered = 0.0
+    for r in results:
+        if r.get("outcome") != "refunded":
+            step_obj = next((s for s in all_steps if s.step_id == r.get("step_id")), None)
+            if step_obj and getattr(step_obj, "actual", None):
+                total_unrecovered += getattr(step_obj.actual, "amount", 0.0)
 
     from engine.anomaly_detector import flag_anomalies
     

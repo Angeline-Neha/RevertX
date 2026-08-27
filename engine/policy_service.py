@@ -17,9 +17,9 @@ async def extract(req: ExtractRequest):
     # Call the async function from policy_extractor
     terms = await extract_policy_terms(req.policy_text)
     # Convert pydantic model to dict
-    if hasattr(terms, "model_dump"):
-        return terms.model_dump()
-    return terms.dict()
+    if hasattr(terms, "to_dict"):
+        return terms.to_dict()
+    return vars(terms)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8004)
