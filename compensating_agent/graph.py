@@ -37,6 +37,19 @@ from state_log.redis_client import (
     publish_event,
     write_compensation_trace,
 )
+import structlog
+from prometheus_client import Counter
+
+logger = structlog.get_logger()
+try:
+    FALSE_DISPUTES_METRIC = Counter('aegis_false_disputes_total', 'Number of network_faults flagged for client errors (4xx)')
+    REFUND_SUCCESS_METRIC = Counter('aegis_refund_success_total', 'Successful refunds via gateway', ['merchant_id'])
+    REFUND_FAILURE_METRIC = Counter('aegis_refund_failure_total', 'Failed refunds via gateway', ['merchant_id'])
+except ValueError:
+    from prometheus_client import REGISTRY
+    FALSE_DISPUTES_METRIC = REGISTRY._names_to_collectors['aegis_false_disputes_total']
+    REFUND_SUCCESS_METRIC = REGISTRY._names_to_collectors['aegis_refund_success_total']
+    REFUND_FAILURE_METRIC = REGISTRY._names_to_collectors['aegis_refund_failure_total']
 
 # ---------------------------------------------------------------------------
 # Merchant base URLs
@@ -282,22 +295,26 @@ async def attempt_refund_node(state: CompensationState) -> dict:
         data = resp.json()
         await db.reset_circuit_breaker(merchant_id)
 
-        if data.get("status") in ("refunded", "success"):
+        if resp.status_code == 200 and data.get("status") in ("refunded", "success"):
             result = {
                 "step_id": step["step_id"],
                 "merchant_id": merchant_id,
                 "outcome": "refunded",
                 "amount_recovered": refund_amount,
-                "message": f"Refund of ₹{refund_amount:,.2f} succeeded.",
+                "message": f"Refund successful via gateway ({resp.status_code})"
             }
+            publish_event(wid, "refund_success", result)
+            REFUND_SUCCESS_METRIC.labels(merchant_id=merchant_id).inc()
         else:
             result = {
                 "step_id": step["step_id"],
                 "merchant_id": merchant_id,
-                "outcome": "rejected",
+                "outcome": "failed",
                 "amount_recovered": 0.0,
-                "message": data.get("reason", "Merchant rejected the refund."),
+                "message": f"Gateway rejected refund ({resp.status_code}): {resp.text}"
             }
+            publish_event(wid, "refund_failed", result)
+            REFUND_FAILURE_METRIC.labels(merchant_id=merchant_id).inc()
 
     except (httpx.TimeoutException, httpx.ConnectError) as exc:
         new_state = await db.record_merchant_failure(merchant_id)
@@ -339,6 +356,12 @@ def classify_and_route_node(state: CompensationState) -> dict:
 
     classification = classify_fault(step_id, raw_response)
     _trace(wid, "classify_and_route", "end", {"fault_type": classification.fault_type})
+    
+    # If the fault is a 4xx error but classified as network_fault, it's a false dispute
+    status_code = failing_step.get("actual", {}).get("status_code", 500)
+    if classification.fault_type == "network_fault" and status_code < 500:
+        FALSE_DISPUTES_METRIC.inc()
+
     return {"fault_classification": classification.model_dump()}
 
 

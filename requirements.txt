@@ -17,3 +17,5 @@ langgraph-checkpoint-postgres>=2.0.0
 
 prometheus_client>=0.20.0
 
+structlog>=24.1.0
+

@@ -18,6 +18,7 @@ from fastapi import BackgroundTasks, FastAPI, WebSocket, WebSocketDisconnect, De
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
+from prometheus_client import make_asgi_app
 from pydantic import BaseModel
 
 load_dotenv()
@@ -68,6 +69,10 @@ async def lifespan(app: FastAPI):
     await db.close_pool()
 
 app = FastAPI(title="Aegis MCP Proxy", lifespan=lifespan)
+# Mount Prometheus metrics
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
