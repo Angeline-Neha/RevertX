@@ -1,4 +1,4 @@
-﻿"""
+"""
 engine/policy_extractor.py
 THE ONLY LLM CALL IN THE ENTIRE SYSTEM.
 
@@ -19,6 +19,16 @@ load_dotenv()
 
 from google import genai
 from google.genai import types
+from prometheus_client import Counter
+
+POLICY_PARSE_FAILURES = Counter(
+    "aegis_policy_parse_failures_total",
+    "Number of times the LLM output could not be parsed as valid JSON or failed schema validation"
+)
+POLICY_FAILSAFE_TRIGGERS = Counter(
+    "aegis_policy_failsafe_triggers_total",
+    "Number of times the policy extractor fell back to the non-refundable default"
+)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 _client: genai.Client | None = None
@@ -123,9 +133,12 @@ async def extract_policy_terms(
             )
 
         except (json.JSONDecodeError, ValueError, KeyError):
+            POLICY_PARSE_FAILURES.inc()
             if attempt == 1:
+                POLICY_FAILSAFE_TRIGGERS.inc()
                 return _FAIL_SAFE
             continue
 
+    POLICY_FAILSAFE_TRIGGERS.inc()
     return _FAIL_SAFE
 

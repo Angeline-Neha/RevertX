@@ -15,3 +15,5 @@ psycopg2-binary>=2.9.9
 aio-pika>=9.0.0
 langgraph-checkpoint-postgres>=2.0.0
 
+prometheus_client>=0.20.0
+

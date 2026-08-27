@@ -361,19 +361,25 @@ def generate_udir_payload_node(state: CompensationState) -> dict:
     return {"udir_payload": payload}
 
 
-def generate_liability_report_node(state: CompensationState) -> dict:
-    """Only called for agent_fault.  UDIR payload is never generated in this branch."""
+async def generate_liability_report_node(state: CompensationState) -> dict:
     wid = state["workflow_id"]
-    failing_step = state["failing_step"]
-    results = state.get("compensation_results") or []
-
     _trace(wid, "generate_liability_report", "start", {})
-
+    failing_step = state["current_step"]
+    results = state.get("compensation_results") or []
     total_unrecovered = sum(
-        failing_step.get("expected", {}).get("amount", 0)
+        failing_step["actual"]["amount"] - r.get("amount_recovered", 0.0)
         for r in results
-        if r.get("outcome") != "refunded"
+        if r.get("outcome") in ("error", "rejected", "non_refundable", "dlq")
     )
+
+    from engine.anomaly_detector import flag_anomalies
+    
+    # We pass the results as a history summary
+    anomaly_result = await flag_anomalies(wid, results)
+    
+    if anomaly_result["is_anomalous"]:
+        publish_event(wid, "anomaly_detected", anomaly_result)
+        _trace(wid, "generate_liability_report", "anomaly_flagged", anomaly_result)
 
     report = LiabilityReport(
         workflow_id=wid,
