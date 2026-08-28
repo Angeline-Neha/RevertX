@@ -41,19 +41,27 @@ Write-Host "Starting Worker..."
 Start-Job { param($r) Set-Location $r; python -m compensating_agent.worker } -ArgumentList $root | Out-Null
 
 Write-Host "Waiting for services to come up..."
-Start-Sleep -Seconds 8
-$failed = @()
-foreach ($port in $requiredPorts) {
-    $listening = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-    if (-not $listening) {
-        $failed += $port
+$maxWaitSeconds = 25
+$elapsed = 0
+$failed = $requiredPorts
+while ($elapsed -lt $maxWaitSeconds -and $failed.Count -gt 0) {
+    Start-Sleep -Seconds 2
+    $elapsed += 2
+    $failed = @()
+    foreach ($port in $requiredPorts) {
+        $listening = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        if (-not $listening) {
+            $failed += $port
+        }
     }
 }
 if ($failed.Count -gt 0) {
     Write-Host ""
-    Write-Host "WARNING: the following ports never came up: $($failed -join ', ')"
+    Write-Host "WARNING: the following ports never came up after ${maxWaitSeconds}s: $($failed -join ', ')"
     Write-Host "Run 'Get-Job | Receive-Job' below to see each job's actual error output."
     Write-Host ""
+} else {
+    Write-Host "All ports up after ${elapsed}s."
 }
 
 Write-Host "All services running as background jobs in THIS window."

@@ -242,11 +242,12 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
         "amount": amount, "status": actual_status,
     })
 
+    final_used, final_limit = await db.get_budget_state(wid)
     response_data = {
         "step_id": entry.step_id,
         "merchant_response": merchant_data,
         "reconciliation": recon_result.model_dump(),
-        "budget": {"used": current_used + (actual_amount if actual_status == "settled" else 0), "limit": current_limit},
+        "budget": {"used": final_used, "limit": final_limit},
     }
 
     # Cache idempotency

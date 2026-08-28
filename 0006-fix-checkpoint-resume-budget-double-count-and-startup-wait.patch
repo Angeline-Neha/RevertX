@@ -1,5 +1,5 @@
 diff --git a/db/client.py b/db/client.py
-index 0a4f6fc..2e6d9f6 100644
+index 0a4f6fc..678dd4f 100644
 --- a/db/client.py
 +++ b/db/client.py
 @@ -119,23 +119,38 @@ async def reset_database_for_testing() -> None:
@@ -65,7 +65,7 @@ index 0a4f6fc..2e6d9f6 100644
      finally:
          await conn.close()
  
-@@ -200,6 +220,25 @@ async def commit_budget(workflow_id: str, expected_amount: float, actual_amount:
+@@ -200,6 +220,26 @@ async def commit_budget(workflow_id: str, expected_amount: float, actual_amount:
              UPDATE workflows SET budget_used = budget_used + $1 WHERE workflow_id = $2
          """, diff, workflow_id)
  
@@ -87,6 +87,7 @@ index 0a4f6fc..2e6d9f6 100644
 +        if row:
 +            return row["budget_used"], row["budget_limit"]
 +        return 0.0, 0.0
++
 +
  async def get_idempotency_response(idem_key: str) -> dict[str, Any] | None:
      async with pool.acquire() as conn:
@@ -110,43 +111,19 @@ index 9b7fdd6..3218116 100644
  
      # Cache idempotency
 diff --git a/start_servers.ps1 b/start_servers.ps1
-index 39544da..4450a66 100644
+index c5a40d5..4450a66 100644
 --- a/start_servers.ps1
 +++ b/start_servers.ps1
-@@ -1,5 +1,28 @@
- ﻿$root = $PSScriptRoot
- 
-+# Pre-flight cleanup. Without this, re-running the script after a previous
-+# session (whose jobs are still tracked, or whose child python processes
-+# were orphaned when the window was closed instead of properly stopped)
-+# leaves the old listeners holding ports 8000-8005. The new Start-Job calls
-+# below then fail to bind, fail silently into "Application shutdown
-+# complete", and every request for the rest of the session gets served by
-+# the STALE OLD PROCESSES instead of whatever's on disk right now — with no
-+# error surfaced anywhere obvious. Clear both possible causes before
-+# starting anything new.
-+Write-Host "Cleaning up any previous background jobs..."
-+Get-Job | Stop-Job -ErrorAction SilentlyContinue
-+Get-Job | Remove-Job -ErrorAction SilentlyContinue
-+
-+Write-Host "Checking for stale processes still holding required ports..."
-+$requiredPorts = 8000, 8001, 8002, 8003, 8004, 8005
-+foreach ($port in $requiredPorts) {
-+    $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-+    foreach ($c in $conns) {
-+        Write-Host "  Port $port is held by PID $($c.OwningProcess) — stopping it."
-+        Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
-+    }
-+}
-+
- Write-Host "Starting Infrastructure (Docker Compose)..."
- docker compose up -d redis-aegis postgres-aegis rabbitmq-aegis
- Start-Sleep -Seconds 5
-@@ -17,6 +40,30 @@ Start-Job { param($r) Set-Location $r; python -m uvicorn proxy.mcp_proxy:app --p
- Write-Host "Starting Worker..."
+@@ -41,19 +41,27 @@ Write-Host "Starting Worker..."
  Start-Job { param($r) Set-Location $r; python -m compensating_agent.worker } -ArgumentList $root | Out-Null
  
-+Write-Host "Waiting for services to come up..."
+ Write-Host "Waiting for services to come up..."
+-Start-Sleep -Seconds 8
+-$failed = @()
+-foreach ($port in $requiredPorts) {
+-    $listening = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+-    if (-not $listening) {
+-        $failed += $port
 +$maxWaitSeconds = 25
 +$elapsed = 0
 +$failed = $requiredPorts
@@ -159,17 +136,16 @@ index 39544da..4450a66 100644
 +        if (-not $listening) {
 +            $failed += $port
 +        }
-+    }
-+}
-+if ($failed.Count -gt 0) {
-+    Write-Host ""
+     }
+ }
+ if ($failed.Count -gt 0) {
+     Write-Host ""
+-    Write-Host "WARNING: the following ports never came up: $($failed -join ', ')"
 +    Write-Host "WARNING: the following ports never came up after ${maxWaitSeconds}s: $($failed -join ', ')"
-+    Write-Host "Run 'Get-Job | Receive-Job' below to see each job's actual error output."
-+    Write-Host ""
+     Write-Host "Run 'Get-Job | Receive-Job' below to see each job's actual error output."
+     Write-Host ""
 +} else {
 +    Write-Host "All ports up after ${elapsed}s."
-+}
-+
+ }
+ 
  Write-Host "All services running as background jobs in THIS window."
- Write-Host "Tail all output live with:  Get-Job | Receive-Job -Wait"
- Write-Host "Stop everything with:       Get-Job | Stop-Job; Get-Job | Remove-Job"
