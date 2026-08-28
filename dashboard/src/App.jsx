@@ -148,7 +148,14 @@ export default function App() {
         break;
 
       case "compensation_complete":
-        log("✓ Aegis compensation complete");
+        log(
+          `✓ Aegis compensation complete — udir: ${data.has_udir ? "yes" : "no"}, ` +
+          `liability_report: ${data.has_liability_report ? "yes" : "no"}`
+        );
+        break;
+
+      case "compensation_error":
+        log(`✗ Aegis compensation ERROR: ${data.error}`);
         break;
 
       default:

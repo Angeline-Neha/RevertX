@@ -1,0 +1,20 @@
+diff --git a/dashboard/src/App.jsx b/dashboard/src/App.jsx
+index e4196db..6b82a36 100644
+--- a/dashboard/src/App.jsx
++++ b/dashboard/src/App.jsx
+@@ -148,7 +148,14 @@ export default function App() {
+         break;
+ 
+       case "compensation_complete":
+-        log("✓ Aegis compensation complete");
++        log(
++          `✓ Aegis compensation complete — udir: ${data.has_udir ? "yes" : "no"}, ` +
++          `liability_report: ${data.has_liability_report ? "yes" : "no"}`
++        );
++        break;
++
++      case "compensation_error":
++        log(`✗ Aegis compensation ERROR: ${data.error}`);
+         break;
+ 
+       default:
