@@ -29,6 +29,18 @@ def classify_fault(step_id: str, raw_gateway_response: dict) -> FaultClassificat
 
     This function must never call an LLM.  It must never raise an exception.
     When genuinely ambiguous, it returns agent_fault (the conservative safe default).
+
+    Signature note: the original spec writes this as
+    classify_fault(raw_gateway_response) — one argument. This implementation
+    deliberately keeps step_id as a second, required parameter rather than
+    matching that signature exactly, because the returned FaultClassification
+    embeds step_id (see below) for downstream tracing — the compensating
+    agent's graph and the batch-eval harness both key their per-step
+    logging off of it. Making the caller stitch step_id onto the result
+    after the fact would just move the same coupling to every call site
+    instead of removing it. If this ever needs to match the spec's exact
+    signature (e.g. for an external contract), the fix is to return a plain
+    dict without step_id and let the caller attach it, not to drop tracing.
     """
     status_code: int | None = raw_gateway_response.get("status_code")
     error_type: str = raw_gateway_response.get("error_type", "")

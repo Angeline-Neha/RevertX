@@ -5,6 +5,13 @@
 # Scratch / temp test scripts
 scratch_*.py
 
+# AI-generated patch/diff files — meant to be applied and discarded, not
+# kept as permanent repo contents. If you genuinely want to keep one,
+# rename it away from this pattern or add it with git add -f.
+000*.patch
+*-combined.diff
+fix-*.diff
+
 # Python
 __pycache__/
 *.pyc

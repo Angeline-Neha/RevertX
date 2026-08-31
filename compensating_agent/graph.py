@@ -40,18 +40,58 @@ from state_log.redis_client import (
     write_compensation_trace,
 )
 import structlog
-from prometheus_client import Counter
+from prometheus_client import Counter, REGISTRY
 
 logger = structlog.get_logger()
-try:
-    FALSE_DISPUTES_METRIC = Counter('aegis_false_disputes_total', 'Number of network_faults flagged for client errors (4xx)')
-    REFUND_SUCCESS_METRIC = Counter('aegis_refund_success_total', 'Successful refunds via gateway', ['merchant_id'])
-    REFUND_FAILURE_METRIC = Counter('aegis_refund_failure_total', 'Failed refunds via gateway', ['merchant_id'])
-except ValueError:
-    from prometheus_client import REGISTRY
-    FALSE_DISPUTES_METRIC = REGISTRY._names_to_collectors['aegis_false_disputes_total']
-    REFUND_SUCCESS_METRIC = REGISTRY._names_to_collectors['aegis_refund_success_total']
-    REFUND_FAILURE_METRIC = REGISTRY._names_to_collectors['aegis_refund_failure_total']
+
+
+def _get_or_create_counter(name: str, description: str, labelnames: tuple[str, ...] = ()):
+    """
+    Create a Counter, or return the existing one if this process already
+    registered a metric with this name — which happens whenever
+    compensating_agent.graph gets imported more than once in the same
+    process (e.g. under pytest test collection, or a module reload).
+
+    Why this exists instead of just calling Counter() at each definition
+    site: the previous version wrapped all three metric definitions in one
+    try/except ValueError block and, on failure, pulled all three back out
+    of REGISTRY._names_to_collectors unconditionally. That's correct only
+    because all three metrics are always created together — if a metric is
+    ever added or removed here without touching the other two, a *partial*
+    re-registration failure would leave one metric's variable unbound
+    while the try/except silently "succeeds" for the other two, which is
+    exactly the kind of unexplained-looking failure the audit flagged.
+    Doing this per-metric makes each one independently safe to add, remove,
+    or reorder.
+
+    REGISTRY._names_to_collectors is used here as a last resort, not a
+    default: as of prometheus_client 0.26, there is no public API to look
+    up an already-registered collector *object* by name (REGISTRY.collect()
+    only returns point-in-time snapshots, not the live collector you can
+    still call .inc() on — using those would silently reset the metric to
+    zero on every re-import instead of preserving its count). This is a
+    real, acknowledged gap in the library, not something skipped by not
+    looking hard enough at the public surface. Isolating it to this one
+    helper — instead of three near-identical try/except blocks — is the
+    actual fix: the reach-around now has exactly one call site to reason
+    about instead of three, and adding a fourth metric later can't
+    reintroduce the all-or-nothing failure mode above.
+    """
+    try:
+        return Counter(name, description, labelnames) if labelnames else Counter(name, description)
+    except ValueError:
+        return REGISTRY._names_to_collectors[name]
+
+
+FALSE_DISPUTES_METRIC = _get_or_create_counter(
+    "aegis_false_disputes_total", "Number of network_faults flagged for client errors (4xx)"
+)
+REFUND_SUCCESS_METRIC = _get_or_create_counter(
+    "aegis_refund_success_total", "Successful refunds via gateway", ("merchant_id",)
+)
+REFUND_FAILURE_METRIC = _get_or_create_counter(
+    "aegis_refund_failure_total", "Failed refunds via gateway", ("merchant_id",)
+)
 
 # ---------------------------------------------------------------------------
 # Merchant base URLs
