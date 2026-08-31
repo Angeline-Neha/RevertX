@@ -24,6 +24,7 @@ function AegisNode({ data }) {
   return (
     <motion.div
       className={`rounded-lg px-4 py-3 min-w-[140px] text-center relative ${s.pulse ? "node-pulse" : ""}`}
+      title={data.status === "failed" && data.error ? data.error : undefined}
       style={{
         background: s.bg,
         border: `2px solid ${s.border}`,
@@ -95,6 +96,11 @@ export default function WorkflowGraph({ nodeStates, compensationNodes }) {
           data: {
             label: COMP_NODE_LABELS[cn.id] || cn.label,
             status: cn.status || "pending",
+            // Shown as a hover tooltip on failed nodes (see AegisNode's
+            // title attribute below) so the reason a node failed — e.g.
+            // the actual Gemini API error — doesn't only live in the
+            // scrollback log.
+            error: cn.error,
           },
         });
       });

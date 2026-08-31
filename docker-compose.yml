@@ -40,6 +40,21 @@ services:
       timeout: 3s
       retries: 5
 
+  # NOTE on REDIS_HOST/PG_HOST below: inside a container, "localhost"
+  # means the container itself, not the redis-aegis/postgres-aegis
+  # containers — those are only reachable by their Compose service name
+  # over the network Compose creates automatically. Previously these two
+  # services didn't set REDIS_HOST/REDIS_PORT (or PG_*) at all, so they
+  # silently fell back to policy_extractor.py / db/client.py's
+  # localhost:6380 / localhost:5433 defaults, which resolve to nothing
+  # inside the container. The practical effect: publish_event() (used to
+  # stream LLM tokens to the dashboard's "LLM Reasoning" panel) would
+  # raise a Redis connection error on the very first chunk — previously
+  # this bubbled up as an unhandled exception with the real cause
+  # discarded; it's now caught with the reason preserved (see
+  # engine/policy_extractor.py), but the actual fix is to make sure these
+  # containers can reach Redis/Postgres at all. Ports use the *container*
+  # port (6379/5432), not the host-mapped port (6380/5433) above.
   policy-extractor:
     build: .
     container_name: aegis-policy-extractor
@@ -48,6 +63,18 @@ services:
       - "8004:8004"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_HOST=redis-aegis
+      - REDIS_PORT=6379
+      - PG_HOST=postgres-aegis
+      - PG_PORT=5432
+      - PG_USER=${PG_USER:-aegis}
+      - PG_PASSWORD=${PG_PASSWORD:-aegispassword}
+      - PG_DB=${PG_DB:-aegis}
+    depends_on:
+      redis-aegis:
+        condition: service_healthy
+      postgres-aegis:
+        condition: service_healthy
     restart: unless-stopped
 
   anomaly-detector:
@@ -58,4 +85,16 @@ services:
       - "8005:8005"
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_HOST=redis-aegis
+      - REDIS_PORT=6379
+      - PG_HOST=postgres-aegis
+      - PG_PORT=5432
+      - PG_USER=${PG_USER:-aegis}
+      - PG_PASSWORD=${PG_PASSWORD:-aegispassword}
+      - PG_DB=${PG_DB:-aegis}
+    depends_on:
+      redis-aegis:
+        condition: service_healthy
+      postgres-aegis:
+        condition: service_healthy
     restart: unless-stopped

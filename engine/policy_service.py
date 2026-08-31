@@ -5,8 +5,11 @@ Isolated microservice for running LLM policy extraction.
 from fastapi import FastAPI
 from pydantic import BaseModel
 import uvicorn
-from engine.policy_extractor import extract_policy_terms
+import structlog
+from engine.policy_extractor import extract_policy_terms, PolicyTerms
 from state_log.redis_client import publish_event
+
+logger = structlog.get_logger()
 
 app = FastAPI(title="Aegis Policy Extractor Service")
 
@@ -32,8 +35,26 @@ async def extract(req: ExtractRequest):
         async def stream_callback(chunk: str) -> None:
             publish_event(req.workflow_id, "llm_stream_chunk", {"chunk": chunk})
 
-    # Call the async function from policy_extractor
-    terms = await extract_policy_terms(req.policy_text, stream_callback=stream_callback)
+    # extract_policy_terms() already catches everything it knows about
+    # (parse failures and API/network failures alike) and returns a
+    # fail-safe PolicyTerms rather than raising. This try/except is
+    # defense-in-depth only, for anything genuinely unanticipated (e.g. a
+    # bug in this service's own glue code), so this endpoint never returns
+    # a bare 500 that would (a) surface to graph.py as an opaque "Server
+    # error '500 Internal Server Error'" with the real cause discarded,
+    # and (b) leave the dashboard's "LLM Reasoning" panel stuck on
+    # "Waiting for policy extraction call..." forever with no explanation.
+    try:
+        terms = await extract_policy_terms(req.policy_text, stream_callback=stream_callback)
+    except Exception as exc:
+        logger.error("policy_service.extract_unexpected_failure", error_type=type(exc).__name__, error=str(exc))
+        terms = PolicyTerms(
+            refundable=False,
+            penalty_percentage=None,
+            conditions=f"Unexpected policy_service failure — defaulting to non-refundable "
+                       f"(fail safe). Reason: {type(exc).__name__}: {exc}",
+        )
+
     # Convert pydantic model to dict
     if hasattr(terms, "to_dict"):
         return terms.to_dict()

@@ -21,10 +21,18 @@ load_dotenv()
 from google import genai
 from google.genai import types
 from prometheus_client import Counter
+import structlog
+
+logger = structlog.get_logger()
 
 POLICY_PARSE_FAILURES = Counter(
     "aegis_policy_parse_failures_total",
     "Number of times the LLM output could not be parsed as valid JSON or failed schema validation"
+)
+POLICY_API_FAILURES = Counter(
+    "aegis_policy_api_failures_total",
+    "Number of times the underlying Gemini API call itself failed (auth, quota, network, "
+    "server error) as opposed to returning a response that failed to parse"
 )
 POLICY_FAILSAFE_TRIGGERS = Counter(
     "aegis_policy_failsafe_triggers_total",
@@ -79,6 +87,22 @@ _FAIL_SAFE = PolicyTerms(
     penalty_percentage=None,
     conditions="Failed to parse policy after 2 attempts — defaulting to non-refundable (fail safe).",
 )
+
+
+def _fail_safe_for(exc: Exception) -> PolicyTerms:
+    """Fail-safe result that carries the real reason, instead of the
+    generic parse-failure message, when the failure was the Gemini API
+    call itself (auth, quota, invalid model, network) rather than a
+    malformed response. Downstream (compute_refund_amount_node) only
+    reads refundable/penalty_percentage, so this is purely for
+    diagnosability in the trace log and dashboard — it changes nothing
+    about the fail-safe behavior itself."""
+    return PolicyTerms(
+        refundable=False,
+        penalty_percentage=None,
+        conditions=f"LLM API call failed after 2 attempts — defaulting to non-refundable "
+                   f"(fail safe). Reason: {type(exc).__name__}: {exc}",
+    )
 
 
 def _sync_stream(prompt: str) -> tuple[str, list[str]]:
@@ -152,6 +176,8 @@ async def extract_policy_terms(
     """
     prompt = _EXTRACTION_PROMPT.format(policy_text=policy_text)
 
+    last_api_exc: Exception | None = None
+
     for attempt in range(2):
         try:
             if stream_callback is not None:
@@ -182,12 +208,53 @@ async def extract_policy_terms(
                 conditions=str(data.get("conditions", "")),
             )
 
-        except (json.JSONDecodeError, ValueError, KeyError):
+        except (json.JSONDecodeError, ValueError, KeyError) as exc:
+            # The API call succeeded but returned something we couldn't use.
             POLICY_PARSE_FAILURES.inc()
+            logger.warning(
+                "policy_extractor.parse_failure", attempt=attempt, error=str(exc)
+            )
             if attempt == 1:
                 POLICY_FAILSAFE_TRIGGERS.inc()
                 return _FAIL_SAFE
             continue
+
+        except Exception as exc:
+            # The API call itself failed — auth, quota, invalid model, a
+            # transient network/server error, or anything else the SDK
+            # can raise (e.g. google.genai.errors.APIError and its
+            # ClientError/ServerError subclasses, or a connection error
+            # below the SDK). Previously only (JSONDecodeError, ValueError,
+            # KeyError) were caught here, so any real API failure bypassed
+            # the retry/fail-safe path entirely and propagated all the way
+            # up through policy_service's /extract endpoint as an
+            # unhandled 500 — which is what a caller (graph.py) sees as
+            # just "Server error '500 Internal Server Error'", with the
+            # actual reason (bad key, wrong model name, quota exceeded,
+            # no network route to Gemini, etc.) never logged or surfaced
+            # anywhere. Catching it here means: (a) it gets the same
+            # 2-attempt retry as a parse failure, since a chunk of these
+            # are transient, (b) it's logged with the real exception type
+            # and message where the service's own terminal can show it,
+            # and (c) the fail-safe result itself carries the reason via
+            # _fail_safe_for(), so it's visible in the compensation trace
+            # / dashboard log instead of just "error" with no detail.
+            last_api_exc = exc
+            POLICY_API_FAILURES.inc()
+            logger.error(
+                "policy_extractor.api_call_failed",
+                attempt=attempt,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            if attempt == 1:
+                POLICY_FAILSAFE_TRIGGERS.inc()
+                return _fail_safe_for(exc)
+            continue
+
+    if last_api_exc is not None:
+        POLICY_FAILSAFE_TRIGGERS.inc()
+        return _fail_safe_for(last_api_exc)
 
     POLICY_FAILSAFE_TRIGGERS.inc()
     return _FAIL_SAFE

@@ -122,14 +122,23 @@ export default function App() {
         break;
 
       case "compensation_trace": {
-        const { node, status } = data;
-        log(`  [Aegis:${node}] ${status}`);
+        const { node, status, error } = data;
+        // _trace() in graph.py attaches {"error": str(exc)} on status
+        // "error" events (e.g. extract_policy_terms_node's except
+        // clause), but that detail was previously dropped here — the log
+        // only ever showed "[Aegis:extract_policy] error" with no
+        // indication of *why* (bad/missing GEMINI_API_KEY, wrong model
+        // name, the policy-extractor service being unreachable, etc.).
+        // Surface it whenever it's present so a real failure is
+        // diagnosable from the dashboard instead of only from the
+        // service's own terminal output.
+        log(`  [Aegis:${node}] ${status}${error ? ` — ${error}` : ""}`);
         setCompensationNodes((prev) => {
           const existing = prev.find((n) => n.id === node);
           const newState =
             status === "start" ? "in_progress" : status === "end" ? "success" : status === "error" ? "failed" : status === "skip" ? "skipped" : "pending";
-          if (existing) return prev.map((n) => n.id === node ? { ...n, status: newState } : n);
-          return [...prev, { id: node, label: node.replace(/_/g, " "), status: newState }];
+          if (existing) return prev.map((n) => n.id === node ? { ...n, status: newState, error: error || n.error } : n);
+          return [...prev, { id: node, label: node.replace(/_/g, " "), status: newState, error }];
         });
         break;
       }
