@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 from dataclasses import dataclass, asdict
 from typing import Callable, Awaitable
 
@@ -81,7 +82,9 @@ _FAIL_SAFE = PolicyTerms(
 
 
 def _sync_stream(prompt: str) -> tuple[str, list[str]]:
-    """Sync Gemini streaming — runs in a thread via asyncio.to_thread()."""
+    """Sync Gemini streaming — runs in a thread via asyncio.to_thread().
+    Used only when there's no stream_callback to forward chunks to live;
+    see _sync_stream_to_queue below for the genuinely live-paced path."""
     client = _get_client()
     full_text = ""
     chunks: list[str] = []
@@ -98,6 +101,44 @@ def _sync_stream(prompt: str) -> tuple[str, list[str]]:
     return full_text, chunks
 
 
+def _sync_stream_to_queue(prompt: str, q: "queue.Queue[str | None]") -> str:
+    """
+    Same Gemini call as _sync_stream, but pushes each chunk onto q the
+    moment it arrives instead of collecting them all before returning.
+
+    Runs in a background thread (via asyncio.to_thread). The async caller
+    concurrently drains q and awaits stream_callback(chunk) for each one —
+    that's what makes the dashboard's "LLM Reasoning" panel show genuine
+    token-by-token output as Gemini generates it, rather than the entire
+    response appearing in one burst once the call is already done (which
+    is what the previous version of extract_policy_terms() did: it fully
+    collected every chunk inside this same kind of thread call, and only
+    replayed them through stream_callback afterward — functionally
+    equivalent to the "typing-effect animation faked over a static
+    string" the spec explicitly says not to build, even though the chunks
+    themselves were honestly sourced from a real streaming API call).
+
+    Puts a final None sentinel once the stream ends (success or error) so
+    the consumer knows to stop waiting.
+    """
+    client = _get_client()
+    full_text = ""
+    try:
+        for chunk in client.models.generate_content_stream(
+            model="gemini-3.6-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
+        ):
+            if chunk.text:
+                full_text += chunk.text
+                q.put(chunk.text)
+    finally:
+        q.put(None)
+    return full_text
+
+
 async def extract_policy_terms(
     policy_text: str,
     stream_callback: Callable[[str], Awaitable[None]] | None = None,
@@ -105,18 +146,27 @@ async def extract_policy_terms(
     """
     Async wrapper around the sync Gemini call.
     Uses asyncio.to_thread() to avoid any async httpx client init/cleanup issues.
-    Replays buffered chunks through stream_callback after the call completes.
+    When stream_callback is given, forwards each chunk to it AS Gemini
+    generates it (see _sync_stream_to_queue) rather than buffering the
+    full response before replaying anything.
     """
     prompt = _EXTRACTION_PROMPT.format(policy_text=policy_text)
 
     for attempt in range(2):
         try:
-            full_text, chunks = await asyncio.to_thread(_sync_stream, prompt)
-
-            # Replay chunks to the dashboard stream panel
-            if stream_callback and chunks:
-                for chunk in chunks:
+            if stream_callback is not None:
+                q: "queue.Queue[str | None]" = queue.Queue()
+                producer = asyncio.create_task(
+                    asyncio.to_thread(_sync_stream_to_queue, prompt, q)
+                )
+                while True:
+                    chunk = await asyncio.to_thread(q.get)
+                    if chunk is None:
+                        break
                     await stream_callback(chunk)
+                full_text = await producer
+            else:
+                full_text, _chunks = await asyncio.to_thread(_sync_stream, prompt)
 
             data = json.loads(full_text)
             if "refundable" not in data:

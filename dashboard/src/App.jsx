@@ -6,12 +6,17 @@ import ReasoningStream from "./components/ReasoningStream.jsx";
 import MetricsBar from "./components/MetricsBar.jsx";
 import EndStatePanel from "./components/EndStatePanel.jsx";
 
-// Batch eval metrics — from last run of test_harness/run_batch_eval.py (51 records)
-// These numbers match results.json committed to the repo.
+// Batch eval metrics — from last run of test_harness/run_batch_eval.py.
+// These numbers must match results.json committed to the repo exactly —
+// spec §9.8 step 3 explicitly says paste the literal output numbers, not
+// rounded or qualitative ones. Re-run run_batch_eval.py and update BOTH
+// this object and results.json together before any demo/submission —
+// there's no dynamic loader wiring this to results.json automatically.
 const BATCH_METRICS = {
   matchRate: 1.0,
   mismatchDetectionRate: 1.0,
   falseDisputeRate: 0.0,
+  totalRecords: 51,
 };
 
 // Derive workflow ID from URL hash, e.g. /#wf-uuid

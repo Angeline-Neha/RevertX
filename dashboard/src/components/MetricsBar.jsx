@@ -1,5 +1,5 @@
 export default function MetricsBar({ metrics }) {
-  const { matchRate, mismatchDetectionRate, falseDisputeRate } = metrics;
+  const { matchRate, mismatchDetectionRate, falseDisputeRate, totalRecords } = metrics;
   const fmt = (v) => `${(v * 100).toFixed(1)}%`;
 
   return (
@@ -19,7 +19,7 @@ export default function MetricsBar({ metrics }) {
       />
       <div className="w-px h-8 bg-[var(--border)]" />
       <div className="text-xs text-[var(--text-muted)] text-center">
-        <div className="font-semibold text-white">50 records</div>
+        <div className="font-semibold text-white">{totalRecords} records</div>
         <div>batch eval</div>
       </div>
     </div>

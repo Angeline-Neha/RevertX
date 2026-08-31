@@ -117,7 +117,11 @@ async def test_policy_service_decoupled(monkeypatch):
     assert calls, "extract_policy_terms_node never made an HTTP call — it may be calling the extractor in-process instead"
     called_url, called_body = calls[0]
     assert "/extract" in called_url, f"expected a call to the policy service's /extract endpoint, got {called_url}"
-    assert called_body == {"policy_text": state["policy_text"]}
+    assert called_body == {"policy_text": state["policy_text"], "workflow_id": state["workflow_id"]}, (
+        "extract_policy_terms_node must send workflow_id to the policy service "
+        "so it can publish llm_stream_chunk events to the correct dashboard "
+        "channel — see engine/policy_service.py."
+    )
 
     assert result["policy_terms"]["refundable"] is True
     assert result["policy_terms"]["penalty_percentage"] == 5

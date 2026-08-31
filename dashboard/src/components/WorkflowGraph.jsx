@@ -56,12 +56,19 @@ const COMP_NODE_LABELS = {
   load_workflow_log:       "Load Log",
   select_next_step_to_undo:"Select Step",
   fetch_policy:            "Fetch Policy",
-  extract_policy_terms:    "Extract Terms (LLM)",
+  // graph.py's _trace() calls fire under the key "extract_policy" (see
+  // extract_policy_terms_node in compensating_agent/graph.py), not
+  // "extract_policy_terms" — this label previously never matched, so this
+  // sub-node (the one the spec calls "the single moment worth the most
+  // build time", §9.7 region 4) silently fell back to an auto-generated
+  // "extract policy" label instead of the intended one below.
+  extract_policy:          "Extract Terms (LLM)",
   compute_refund_amount:   "Compute Refund",
   attempt_refund:          "Attempt Refund",
   classify_and_route:      "Classify & Route",
   generate_udir_payload:   "UDIR Payload",
   generate_liability_report:"Liability Report",
+  anomaly_check:           "Anomaly Check (LLM, advisory)",
 };
 
 export default function WorkflowGraph({ nodeStates, compensationNodes }) {

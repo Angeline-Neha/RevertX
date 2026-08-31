@@ -233,7 +233,7 @@ async def extract_policy_terms_node(state: CompensationState) -> dict:
     policy_url = os.getenv("POLICY_SERVICE_URL", "http://localhost:8004")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(f"{policy_url}/extract", json={"policy_text": policy_text})
+            resp = await client.post(f"{policy_url}/extract", json={"policy_text": policy_text, "workflow_id": wid})
             resp.raise_for_status()
             terms_data = resp.json()
             
