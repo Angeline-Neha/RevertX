@@ -71,6 +71,37 @@ async def test_extract_policy_terms_streams_chunks_live(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_client_construction_failure_does_not_hang_the_streaming_path(monkeypatch):
+    """
+    Regression test for a real, reproduced bug: _sync_stream_to_queue used
+    to call _get_client() OUTSIDE its try/finally, so a client-construction
+    failure (e.g. an eager API key validation error) meant the queue's
+    None sentinel never got pushed — the consumer loop in
+    extract_policy_terms() blocked forever on q.get() waiting for a
+    sentinel that would never arrive, hanging the compensating agent's
+    node indefinitely instead of failing cleanly. Confirmed hanging for 5+
+    seconds before the fix and completing near-instantly after.
+    """
+
+    def raising_get_client():
+        raise PermissionError("API key not valid. Please pass a valid API key.")
+
+    monkeypatch.setattr(pe, "_get_client", raising_get_client)
+
+    async def stream_callback(chunk: str) -> None:
+        pytest.fail(f"no chunk should ever be produced when the client fails to construct, got: {chunk!r}")
+
+    result = await asyncio.wait_for(
+        pe.extract_policy_terms("policy text", stream_callback=stream_callback),
+        timeout=2.0,  # generous; the bug this guards against would hang indefinitely, not just slowly
+    )
+
+    assert result.refundable is False
+    assert "PermissionError" in result.conditions
+    assert "API key not valid" in result.conditions
+
+
+@pytest.mark.asyncio
 async def test_extract_policy_terms_without_callback_still_works(monkeypatch):
     """The no-callback path (used wherever nothing needs live chunks,
     e.g. direct/offline calls) must still return the correct parsed

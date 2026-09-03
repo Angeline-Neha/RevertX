@@ -145,9 +145,9 @@ def _sync_stream_to_queue(prompt: str, q: "queue.Queue[str | None]") -> str:
     Puts a final None sentinel once the stream ends (success or error) so
     the consumer knows to stop waiting.
     """
-    client = _get_client()
     full_text = ""
     try:
+        client = _get_client()
         for chunk in client.models.generate_content_stream(
             model="gemini-3.6-flash",
             contents=prompt,
@@ -159,6 +159,17 @@ def _sync_stream_to_queue(prompt: str, q: "queue.Queue[str | None]") -> str:
                 full_text += chunk.text
                 q.put(chunk.text)
     finally:
+        # MUST run even if _get_client() itself raises (e.g. an eager API
+        # key validation error) — this was a real, reproducible bug: with
+        # client = _get_client() sitting OUTSIDE this try/finally, a
+        # construction-time failure meant q.put(None) never ran, and the
+        # consumer loop in extract_policy_terms() (`await
+        # asyncio.to_thread(q.get)`) blocked forever waiting for a
+        # sentinel that would never arrive — hanging the whole
+        # compensating-agent node indefinitely instead of failing cleanly
+        # into the fail-safe path. Confirmed by reproducing it directly
+        # (mocking _get_client() to raise) before this fix, and confirming
+        # the hang disappears after.
         q.put(None)
     return full_text
 
