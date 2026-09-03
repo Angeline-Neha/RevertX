@@ -43,13 +43,26 @@ export default function ReasoningStream({ llmStream, mathLine }) {
           {mathLine && (
             <div
               className="rounded px-3 py-2 text-sm font-semibold"
-              style={{
-                background: "#1a2a1a",
-                border: "1px solid var(--green)",
-                color: "#3fb950",
-              }}
+              style={
+                mathLine.isFailSafe
+                  ? {
+                      background: "#2a1f0a",
+                      border: "1px solid #d29922",
+                      color: "#d29922",
+                    }
+                  : {
+                      background: "#1a2a1a",
+                      border: "1px solid var(--green)",
+                      color: "#3fb950",
+                    }
+              }
             >
-              {mathLine}
+              {mathLine.isFailSafe && (
+                <div className="text-xs font-bold uppercase tracking-wide mb-1">
+                  ⚠ Fail-safe default — not a genuine policy read
+                </div>
+              )}
+              {mathLine.formula}
             </div>
           )}
         </div>

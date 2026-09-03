@@ -241,13 +241,18 @@ async def extract_policy_terms_node(state: CompensationState) -> dict:
             policy_terms = {
                 "refundable": terms_data.get("refundable", False),
                 "penalty_percentage": terms_data.get("penalty_percentage"),
-                "conditions": terms_data.get("conditions", "")
+                "conditions": terms_data.get("conditions", ""),
+                "is_fail_safe": terms_data.get("is_fail_safe", False),
             }
             _trace(wid, "extract_policy", "end", policy_terms)
             return {"policy_terms": policy_terms}
     except Exception as exc:
         _trace(wid, "extract_policy", "error", {"error": str(exc)})
-        return {"policy_terms": {"refundable": False, "penalty_percentage": None, "conditions": "Fallback due to extraction service failure"}}
+        return {"policy_terms": {
+            "refundable": False, "penalty_percentage": None,
+            "conditions": f"Fallback due to extraction service failure: {type(exc).__name__}: {exc}",
+            "is_fail_safe": True,
+        }}
 
 
 def compute_refund_amount_node(state: CompensationState) -> dict:
@@ -259,6 +264,8 @@ def compute_refund_amount_node(state: CompensationState) -> dict:
     original_amount: float = step["expected"]["amount"]
     refundable: bool = terms.get("refundable", False)
     penalty_pct: float | None = terms.get("penalty_percentage")
+    conditions: str = terms.get("conditions", "")
+    is_fail_safe: bool = terms.get("is_fail_safe", False)
 
     _trace(wid, "compute_refund_amount", "start", {
         "original_amount": original_amount,
@@ -278,7 +285,19 @@ def compute_refund_amount_node(state: CompensationState) -> dict:
     else:
         math_line = f"Non-refundable. No refund issued."
 
-    publish_event(wid, "math_computation", {"formula": math_line})
+    # Surface WHY, not just the arithmetic result — this was previously
+    # computed (by the extract_policy_terms fail-safe path) but never
+    # actually shown anywhere on the dashboard: a genuinely non-refundable
+    # merchant policy and "the LLM call failed so we defaulted to
+    # non-refundable" both rendered as the exact same generic
+    # "Non-refundable. No refund issued." line, with zero visible
+    # distinction. is_fail_safe drives a different visual treatment in
+    # ReasoningStream.jsx (amber/warning instead of green success) so a
+    # fail-safe default can never be mistaken for a confident answer.
+    if conditions:
+        math_line += f"  [{conditions}]"
+
+    publish_event(wid, "math_computation", {"formula": math_line, "is_fail_safe": is_fail_safe})
     _trace(wid, "compute_refund_amount", "end", {"refund_amount": amount, "formula": math_line})
     return {"refund_amount": amount}
 

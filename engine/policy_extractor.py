@@ -77,6 +77,14 @@ class PolicyTerms:
     refundable: bool
     penalty_percentage: float | None
     conditions: str
+    # True whenever this result is a fail-safe default rather than a real
+    # extraction — lets callers (graph.py, the dashboard) distinguish "the
+    # merchant's policy genuinely says non-refundable" from "we don't
+    # actually know, the LLM call/parse failed" without parsing the
+    # conditions string for magic phrases. Defaults to False so every
+    # existing successful-extraction call site (below) doesn't need to
+    # change.
+    is_fail_safe: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -86,6 +94,7 @@ _FAIL_SAFE = PolicyTerms(
     refundable=False,
     penalty_percentage=None,
     conditions="Failed to parse policy after 2 attempts — defaulting to non-refundable (fail safe).",
+    is_fail_safe=True,
 )
 
 
@@ -102,6 +111,7 @@ def _fail_safe_for(exc: Exception) -> PolicyTerms:
         penalty_percentage=None,
         conditions=f"LLM API call failed after 2 attempts — defaulting to non-refundable "
                    f"(fail safe). Reason: {type(exc).__name__}: {exc}",
+        is_fail_safe=True,
     )
 
 

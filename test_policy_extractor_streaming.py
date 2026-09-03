@@ -102,6 +102,41 @@ async def test_client_construction_failure_does_not_hang_the_streaming_path(monk
 
 
 @pytest.mark.asyncio
+async def test_is_fail_safe_flag_distinguishes_genuine_from_default(monkeypatch):
+    """
+    Regression test for a real observability gap: PolicyTerms.conditions
+    carried the real failure reason (added in the api-failure-handling
+    fix), but nothing downstream (compute_refund_amount_node's math_line,
+    the dashboard) ever surfaced it — a genuine "merchant policy says
+    non-refundable" and "the LLM call silently failed so we defaulted to
+    non-refundable" rendered as the exact same generic
+    "Non-refundable. No refund issued." with zero visible distinction.
+    is_fail_safe is the structured signal that fixes this; this test
+    locks in that it's set correctly in both directions and that to_dict()
+    (what actually crosses the policy_service HTTP boundary) includes it.
+    """
+
+    def raising_get_client():
+        raise PermissionError("API key not valid")
+
+    monkeypatch.setattr(pe, "_get_client", raising_get_client)
+    failed_result = await pe.extract_policy_terms("policy text")
+    assert failed_result.is_fail_safe is True
+    assert failed_result.to_dict()["is_fail_safe"] is True
+
+    class _FakeGoodClient:
+        class models:
+            @staticmethod
+            def generate_content_stream(**kwargs):
+                yield _FakeChunk('{"refundable": true, "penalty_percentage": 0, "conditions": "Fully refundable"}')
+
+    monkeypatch.setattr(pe, "_get_client", lambda: _FakeGoodClient())
+    good_result = await pe.extract_policy_terms("policy text")
+    assert good_result.is_fail_safe is False
+    assert good_result.to_dict()["is_fail_safe"] is False
+
+
+@pytest.mark.asyncio
 async def test_extract_policy_terms_without_callback_still_works(monkeypatch):
     """The no-callback path (used wherever nothing needs live chunks,
     e.g. direct/offline calls) must still return the correct parsed

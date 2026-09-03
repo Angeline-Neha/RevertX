@@ -53,6 +53,7 @@ async def extract(req: ExtractRequest):
             penalty_percentage=None,
             conditions=f"Unexpected policy_service failure — defaulting to non-refundable "
                        f"(fail safe). Reason: {type(exc).__name__}: {exc}",
+            is_fail_safe=True,
         )
 
     # Convert pydantic model to dict

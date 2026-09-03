@@ -148,7 +148,7 @@ export default function App() {
         break;
 
       case "math_computation":
-        setMathLine(data.formula);
+        setMathLine({ formula: data.formula, isFailSafe: !!data.is_fail_safe });
         log(`  [Math] ${data.formula}`);
         break;
 
