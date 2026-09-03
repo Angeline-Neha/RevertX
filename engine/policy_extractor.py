@@ -123,7 +123,7 @@ def _sync_stream(prompt: str) -> tuple[str, list[str]]:
     full_text = ""
     chunks: list[str] = []
     for chunk in client.models.generate_content_stream(
-        model="gemini-3.6-flash",
+        model="gemini-3.5-flash-lite",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -159,7 +159,7 @@ def _sync_stream_to_queue(prompt: str, q: "queue.Queue[str | None]") -> str:
     try:
         client = _get_client()
         for chunk in client.models.generate_content_stream(
-            model="gemini-3.6-flash",
+            model="gemini-3.5-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -271,6 +271,7 @@ async def extract_policy_terms(
             if attempt == 1:
                 POLICY_FAILSAFE_TRIGGERS.inc()
                 return _fail_safe_for(exc)
+            await asyncio.sleep(1.5)
             continue
 
     if last_api_exc is not None:

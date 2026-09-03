@@ -85,7 +85,7 @@ def _sync_anomaly_check(steps_data: str) -> str:
     # itself or the response content. Dropping response_schema here matches
     # the one Gemini call path already proven reliable in this exact repo.
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model="gemini-3.5-flash-lite",
         contents=_ANOMALY_PROMPT.format(steps_data=steps_data),
         config=types.GenerateContentConfig(
             temperature=0.0,

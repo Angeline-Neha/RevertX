@@ -1,0 +1,13 @@
+diff --git a/compensating_agent/graph.py b/compensating_agent/graph.py
+index 8da1636..08878ef 100644
+--- a/compensating_agent/graph.py
++++ b/compensating_agent/graph.py
+@@ -530,7 +530,7 @@ async def _check_anomalies_background(wid: str, results: list[dict]) -> None:
+     service rather than an inline import."""
+     anomaly_service_url = os.getenv("ANOMALY_SERVICE_URL", "http://localhost:8005")
+     try:
+-        async with httpx.AsyncClient(timeout=8.0) as client:
++        async with httpx.AsyncClient(timeout=15.0) as client:
+             resp = await client.post(
+                 f"{anomaly_service_url}/flag_anomalies",
+                 json={"workflow_id": wid, "steps": results},

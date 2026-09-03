@@ -132,7 +132,8 @@ export default function App() {
         // Surface it whenever it's present so a real failure is
         // diagnosable from the dashboard instead of only from the
         // service's own terminal output.
-        log(`  [Aegis:${node}] ${status}${error ? ` — ${error}` : ""}`);
+        const bgNote = node === "anomaly_check" ? " (background, advisory — not part of the completed result)" : "";
+        log(`  [Aegis:${node}] ${status}${bgNote}${error ? ` — ${error}` : ""}`);
         setCompensationNodes((prev) => {
           const existing = prev.find((n) => n.id === node);
           const newState =

@@ -203,7 +203,7 @@ async def fetch_policy(state: CompensationState) -> dict:
 
     base_url = MERCHANT_URLS.get(merchant_id, "")
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{base_url}/policy")
             resp.raise_for_status()
             policy_data = resp.json()
@@ -364,7 +364,7 @@ async def attempt_refund_node(state: CompensationState) -> dict:
         if merchant_id == "merchant_c":
             payload["amount"] = refund_amount
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(f"{base_url}/refund", json=payload)
         data = resp.json()
         await db.reset_circuit_breaker(merchant_id)
@@ -530,7 +530,7 @@ async def _check_anomalies_background(wid: str, results: list[dict]) -> None:
     service rather than an inline import."""
     anomaly_service_url = os.getenv("ANOMALY_SERVICE_URL", "http://localhost:8005")
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 f"{anomaly_service_url}/flag_anomalies",
                 json={"workflow_id": wid, "steps": results},

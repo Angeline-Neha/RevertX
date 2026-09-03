@@ -1,0 +1,43 @@
+diff --git a/engine/anomaly_detector.py b/engine/anomaly_detector.py
+index e4b4324..e00fc0c 100644
+--- a/engine/anomaly_detector.py
++++ b/engine/anomaly_detector.py
+@@ -85,7 +85,7 @@ def _sync_anomaly_check(steps_data: str) -> str:
+     # itself or the response content. Dropping response_schema here matches
+     # the one Gemini call path already proven reliable in this exact repo.
+     response = client.models.generate_content(
+-        model="gemini-3.6-flash",
++        model="gemini-3.5-flash-lite",
+         contents=_ANOMALY_PROMPT.format(steps_data=steps_data),
+         config=types.GenerateContentConfig(
+             temperature=0.0,
+diff --git a/engine/policy_extractor.py b/engine/policy_extractor.py
+index 2980561..2245110 100644
+--- a/engine/policy_extractor.py
++++ b/engine/policy_extractor.py
+@@ -123,7 +123,7 @@ def _sync_stream(prompt: str) -> tuple[str, list[str]]:
+     full_text = ""
+     chunks: list[str] = []
+     for chunk in client.models.generate_content_stream(
+-        model="gemini-3.6-flash",
++        model="gemini-3.5-flash-lite",
+         contents=prompt,
+         config=types.GenerateContentConfig(
+             response_mime_type="application/json",
+@@ -159,7 +159,7 @@ def _sync_stream_to_queue(prompt: str, q: "queue.Queue[str | None]") -> str:
+     try:
+         client = _get_client()
+         for chunk in client.models.generate_content_stream(
+-            model="gemini-3.6-flash",
++            model="gemini-3.5-flash-lite",
+             contents=prompt,
+             config=types.GenerateContentConfig(
+                 response_mime_type="application/json",
+@@ -271,6 +271,7 @@ async def extract_policy_terms(
+             if attempt == 1:
+                 POLICY_FAILSAFE_TRIGGERS.inc()
+                 return _fail_safe_for(exc)
++            await asyncio.sleep(1.5)
+             continue
+ 
+     if last_api_exc is not None:
