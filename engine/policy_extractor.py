@@ -2,7 +2,7 @@
 engine/policy_extractor.py
 THE ONLY LLM CALL IN THE ENTIRE SYSTEM.
 
-Uses Google Gemini (gemini-3.6-flash) via asyncio.to_thread() so it runs
+Uses Google Gemini (gemini-3.5-flash-lite) via asyncio.to_thread() so it runs
 cleanly inside LangGraph ainvoke() without triggering google-genai SDK
 async-cleanup bugs (missing _async_httpx_client attribute on Python 3.14).
 """

@@ -138,7 +138,27 @@ export default function App() {
           const existing = prev.find((n) => n.id === node);
           const newState =
             status === "start" ? "in_progress" : status === "end" ? "success" : status === "error" ? "failed" : status === "skip" ? "skipped" : "pending";
-          if (existing) return prev.map((n) => n.id === node ? { ...n, status: newState, error: error || n.error } : n);
+          // This box is shared across every merchant the undo loop processes
+          // for this pipeline stage (e.g. fetch_policy runs once per
+          // merchant-being-undone, not once per whole workflow). A later
+          // merchant's legitimate "skip" (no /policy endpoint for THAT
+          // merchant) used to unconditionally overwrite an earlier
+          // merchant's legitimate "success" here, making a stage that had
+          // actually worked look skipped/broken. Rank terminal states so a
+          // confirmed failure or success from any merchant stays visible
+          // instead of being silently replaced by a less informative later
+          // status for a different merchant.
+          const RANK = { failed: 3, success: 2, skipped: 1, in_progress: 0, pending: -1 };
+          if (existing) {
+            const keepOld = RANK[existing.status] > RANK[newState];
+            return prev.map((n) =>
+              n.id === node
+                ? keepOld
+                  ? n // don't downgrade a more informative earlier status
+                  : { ...n, status: newState, error: error || n.error }
+                : n
+            );
+          }
           return [...prev, { id: node, label: node.replace(/_/g, " "), status: newState, error }];
         });
         break;
