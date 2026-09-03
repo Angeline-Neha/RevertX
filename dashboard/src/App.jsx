@@ -30,18 +30,39 @@ export default function App() {
   const [inputId, setInputId] = useState("");
   const [connected, setConnected] = useState(false);
   const [terminalLines, setTerminalLines] = useState([]);
+  const [merchants, setMerchants] = useState([]);
   const [nodeStates, setNodeStates] = useState({});
   const [compensationNodes, setCompensationNodes] = useState([]);
   const [llmStream, setLlmStream] = useState("");
   const [mathLine, setMathLine] = useState(null);
   const [endState, setEndState] = useState(null);
   const [budget, setBudget] = useState({ used: 0, limit: 0 });
+  const [recentWorkflows, setRecentWorkflows] = useState([]);
   const wsRef = useRef(null);
 
   const log = useCallback((msg) => {
     const ts = new Date().toLocaleTimeString("en-IN", { hour12: false });
     setTerminalLines((prev) => [...prev.slice(-200), `[${ts}] ${msg}`]);
   }, []);
+
+  const proxyApiKey = import.meta.env.VITE_PROXY_API_KEY || "test-key-123";
+
+  // Fetches the recent-workflows list for the picker panel shown on the
+  // "no workflow connected" screen (Phase 5.2) — click-to-connect instead
+  // of pasting a UUID copied from the demo client's terminal output.
+  const fetchRecentWorkflows = useCallback(async () => {
+    try {
+      const resp = await fetch("http://localhost:8000/workflows?limit=20", {
+        headers: { "X-API-Key": proxyApiKey },
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setRecentWorkflows(data.workflows || []);
+    } catch {
+      // Proxy not reachable yet — the picker just stays empty; the manual
+      // paste field below it still works as a fallback.
+    }
+  }, [proxyApiKey]);
 
   // Clears every piece of per-workflow state. Must run before connecting to
   // ANY workflow_id (including the very first one on mount) — otherwise
@@ -51,6 +72,7 @@ export default function App() {
   // top of them instead of starting clean.
   const resetWorkflowState = useCallback(() => {
     setTerminalLines([]);
+    setMerchants([]);
     setNodeStates({});
     setCompensationNodes([]);
     setLlmStream("");
@@ -62,7 +84,6 @@ export default function App() {
   const connectWS = useCallback((wid) => {
     if (wsRef.current) wsRef.current.close();
     resetWorkflowState();
-    const proxyApiKey = import.meta.env.VITE_PROXY_API_KEY || "test-key-123";
     const ws = new WebSocket(`ws://localhost:8000/ws/${wid}?token=${proxyApiKey}`);
     wsRef.current = ws;
 
@@ -87,6 +108,20 @@ export default function App() {
   function handleEvent(msg) {
     const { event_type, data } = msg;
 
+    // Adds a merchant box to the graph the first time this workflow_id
+    // mentions it, in the order merchants are first seen — replaces the
+    // old hardcoded 3-box MERCHANT_NODES array (Phase 5.1). Fine for the
+    // final label/amount to arrive slightly after the box first appears
+    // (WorkflowGraph.jsx falls back to a generic label until then).
+    function upsertMerchant(id, payee, amount) {
+      if (!id) return;
+      setMerchants((prev) =>
+        prev.some((m) => m.id === id)
+          ? prev
+          : [...prev, { id, label: payee, amount }]
+      );
+    }
+
     switch (event_type) {
       case "workflow_init":
         setBudget({ used: 0, limit: data.budget_limit });
@@ -94,6 +129,7 @@ export default function App() {
         break;
 
       case "payment_attempt":
+        upsertMerchant(data.merchant_id, data.payee, data.amount);
         log(`→ Paying ${data.merchant_id} — ₹${data.amount.toLocaleString("en-IN")} (${data.item})`);
         setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "in_progress" }));
         break;
@@ -110,8 +146,16 @@ export default function App() {
         break;
 
       case "mandate_exceeded":
+        // A mandate-rejected payment never reaches the "3. Forward to
+        // Merchant" step in mcp_proxy.py, so no payment_attempt event ever
+        // fires for it — this is the only place this merchant's box gets
+        // created. merchant_id/payee were previously missing from this
+        // event entirely (the dashboard just hardcoded "merchant_c" here),
+        // which silently broke for any workflow whose budget-busting step
+        // wasn't literally merchant_c.
+        upsertMerchant(data.merchant_id, data.payee, data.amount);
         log(`✗ MANDATE EXCEEDED — ₹${data.amount} rejected. Budget: ₹${data.budget_used} / ₹${data.budget_limit}`);
-        setNodeStates((prev) => ({ ...prev, merchant_c: "failed" }));
+        setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "failed" }));
         break;
 
       case "compensation_started":
@@ -198,18 +242,26 @@ export default function App() {
     }
   }
 
-  function connect() {
-    const wid = inputId.trim();
-    if (!wid) return;
-    setWorkflowId(wid);
-    window.location.hash = wid;
-    connectWS(wid);
+  function connect(wid) {
+    const target = (wid || inputId).trim();
+    if (!target) return;
+    setWorkflowId(target);
+    window.location.hash = target;
+    connectWS(target);
   }
 
   useEffect(() => {
     if (workflowId) connectWS(workflowId);
     return () => wsRef.current?.close();
   }, []);
+
+  // Populate the workflow picker whenever the "no workflow connected"
+  // screen is showing — on first load, and again after a workflow
+  // disconnects — so a demo operator always sees an up-to-date list
+  // instead of a stale one from whenever the page first mounted.
+  useEffect(() => {
+    if (!workflowId) fetchRecentWorkflows();
+  }, [workflowId, fetchRecentWorkflows]);
 
   if (!workflowId) {
     return (
@@ -226,7 +278,7 @@ export default function App() {
           />
           <button
             className="bg-[var(--blue)] text-black font-semibold px-4 py-2 rounded text-sm hover:opacity-90"
-            onClick={connect}
+            onClick={() => connect()}
           >
             Connect
           </button>
@@ -234,6 +286,34 @@ export default function App() {
         <p className="text-xs text-[var(--text-muted)]">
           Run <code className="bg-[var(--bg-secondary)] px-1 py-0.5 rounded">python primary_agent/procurement_agent.py</code> to start a demo workflow
         </p>
+
+        {recentWorkflows.length > 0 && (
+          <div className="w-[420px] mt-4 bg-[var(--bg-secondary)] border border-[var(--border)] rounded overflow-hidden">
+            <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border)] flex items-center justify-between">
+              Recent workflows
+              <button
+                className="text-[var(--blue)] normal-case font-normal hover:underline"
+                onClick={fetchRecentWorkflows}
+              >
+                refresh
+              </button>
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {recentWorkflows.map((w) => (
+                <button
+                  key={w.workflow_id}
+                  className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-primary)] border-b border-[var(--border)] last:border-b-0 flex items-center justify-between"
+                  onClick={() => connect(w.workflow_id)}
+                >
+                  <span className="font-mono truncate">{w.workflow_id}</span>
+                  <span className="text-[var(--text-muted)] ml-2 shrink-0">
+                    ₹{Number(w.budget_used).toLocaleString("en-IN")} / ₹{Number(w.budget_limit).toLocaleString("en-IN")}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -248,7 +328,7 @@ export default function App() {
 
         {/* Center — Workflow Graph */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          <WorkflowGraph nodeStates={nodeStates} compensationNodes={compensationNodes} />
+          <WorkflowGraph merchants={merchants} nodeStates={nodeStates} compensationNodes={compensationNodes} />
         </div>
 
         {/* Right — Reasoning Stream */}

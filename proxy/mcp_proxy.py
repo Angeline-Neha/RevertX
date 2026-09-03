@@ -36,23 +36,16 @@ from state_log.redis_client import (
     publish_event,
 )
 import db.client as db
+from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
 PROXY_API_KEY = os.getenv("PROXY_API_KEY", "test-key-123")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 
-MERCHANT_URLS: dict[str, str] = {
-    "merchant_a": "http://localhost:8001",
-    "merchant_b": "http://localhost:8002",
-    "merchant_c": "http://localhost:8003",
-}
-
-MERCHANT_PAYEES: dict[str, str] = {
-    "merchant_a": "CRM Corp",
-    "merchant_b": "Grand Hotel",
-    "merchant_c": "Domain Registrar",
-}
+# MERCHANT_URLS / MERCHANT_PAYEES now come from mock_merchants/registry.py —
+# the single source of truth shared with compensating_agent/graph.py and the
+# process-launch scripts. Do not redeclare them here.
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
 
@@ -166,6 +159,7 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
         
         publish_event(wid, "mandate_exceeded", {
             "step_id": failing_entry.step_id, "amount": amount,
+            "merchant_id": merchant_id, "payee": payee, "item": item,
             "budget_used": current_used, "budget_limit": current_limit,
         })
         
@@ -262,6 +256,16 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
 def get_workflow(workflow_id: str):
     steps = get_workflow_steps(workflow_id)
     return {"workflow_id": workflow_id, "steps": [s.model_dump() for s in steps]}
+
+
+@app.get("/workflows", dependencies=[Depends(verify_api_key)])
+async def list_workflows(limit: int = 20):
+    """Recent workflows for the dashboard's workflow picker (Phase 5.2) —
+    lets the dashboard offer a click-to-connect list instead of requiring a
+    UUID pasted from the demo client's terminal output."""
+    limit = max(1, min(limit, 100))
+    workflows = await db.list_recent_workflows(limit=limit)
+    return {"workflows": workflows}
 
 
 @app.websocket("/ws/{workflow_id}")

@@ -4,6 +4,8 @@ import subprocess
 import sys
 import time
 
+from mock_merchants.registry import MERCHANTS
+
 REQUIRED_PORTS = {
     "Redis (redis-aegis)": ("localhost", int(os.getenv("REDIS_PORT", "6380"))),
     "Postgres (postgres-aegis)": ("localhost", int(os.getenv("PG_PORT", "5433"))),
@@ -53,9 +55,10 @@ check_infra_or_exit()
 
 procs = []
 print("Starting Merchants...")
-procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_a_crm:app", "--port", "8001"]))
-procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_b_hotel:app", "--port", "8002"]))
-procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_c_domain:app", "--port", "8003"]))
+for merchant_id, spec in MERCHANTS.items():
+    procs.append(subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", spec.app_target, "--port", str(spec.port)]
+    ))
 
 print("Starting Services...")
 procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.policy_service:app", "--port", "8004"]))
@@ -64,13 +67,14 @@ procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "proxy.mcp_proxy
 procs.append(subprocess.Popen([sys.executable, "-m", "compensating_agent.worker"]))
 
 APP_PORTS = {
-    "Merchant A (CRM)": ("localhost", 8001),
-    "Merchant B (Hotel)": ("localhost", 8002),
-    "Merchant C (Domain)": ("localhost", 8003),
+    f"{merchant_id} ({spec.payee})": ("localhost", spec.port)
+    for merchant_id, spec in MERCHANTS.items()
+}
+APP_PORTS.update({
     "Policy extractor service": ("localhost", 8004),
     "Anomaly detector service": ("localhost", 8005),
     "Aegis MCP Proxy": ("localhost", 8000),
-}
+})
 
 
 def check_app_ports_or_exit() -> None:

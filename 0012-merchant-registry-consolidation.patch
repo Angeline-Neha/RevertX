@@ -1,0 +1,275 @@
+diff --git a/compensating_agent/graph.py b/compensating_agent/graph.py
+index 157ee1c..4fd7375 100644
+--- a/compensating_agent/graph.py
++++ b/compensating_agent/graph.py
+@@ -39,6 +39,11 @@ from state_log.redis_client import (
+     publish_event,
+     write_compensation_trace,
+ )
++from mock_merchants.registry import (
++    MERCHANT_URLS,
++    MERCHANTS_WITH_POLICY,
++    MERCHANTS_NEEDING_REFUND_AMOUNT,
++)
+ import structlog
+ from prometheus_client import Counter, REGISTRY
+ 
+@@ -94,16 +99,11 @@ REFUND_FAILURE_METRIC = _get_or_create_counter(
+ )
+ 
+ # ---------------------------------------------------------------------------
+-# Merchant base URLs
++# Merchant base URLs, policy-endpoint membership, and refund-payload shape
++# all come from mock_merchants/registry.py — the single source of truth
++# shared with proxy/mcp_proxy.py and the process-launch scripts. Do not
++# redeclare MERCHANT_URLS / MERCHANTS_WITH_POLICY here.
+ # ---------------------------------------------------------------------------
+-MERCHANT_URLS: dict[str, str] = {
+-    "merchant_a": "http://localhost:8001",
+-    "merchant_b": "http://localhost:8002",
+-    "merchant_c": "http://localhost:8003",
+-}
+-
+-# Merchants that have a /policy endpoint
+-MERCHANTS_WITH_POLICY: frozenset[str] = frozenset({"merchant_b", "merchant_c"})
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -361,7 +361,7 @@ async def attempt_refund_node(state: CompensationState) -> dict:
+ 
+     try:
+         payload: dict[str, Any] = {"settlement_ref": settlement_ref}
+-        if merchant_id == "merchant_c":
++        if merchant_id in MERCHANTS_NEEDING_REFUND_AMOUNT:
+             payload["amount"] = refund_amount
+ 
+         async with httpx.AsyncClient(timeout=10.0) as client:
+diff --git a/mock_merchants/registry.py b/mock_merchants/registry.py
+new file mode 100644
+index 0000000..a3544c7
+--- /dev/null
++++ b/mock_merchants/registry.py
+@@ -0,0 +1,80 @@
++# -*- coding: utf-8 -*-
++"""
++mock_merchants/registry.py
++Single source of truth for every mock merchant: which module implements it,
++what port it runs on, its payee display name, whether it exposes a
++/policy endpoint, and whether its /refund endpoint requires the caller to
++supply the computed refund amount (server-side validated, to catch LLM
++math errors — see merchant_c_domain.py's /refund).
++
++Before this file existed, the same information was hand-duplicated in:
++  - proxy/mcp_proxy.py        (MERCHANT_URLS, MERCHANT_PAYEES)
++  - compensating_agent/graph.py (MERCHANT_URLS, MERCHANTS_WITH_POLICY,
++                                  plus a literal `if merchant_id == "merchant_c"`
++                                  special case inside attempt_refund_node)
++  - run_demo.py / run_bg.py   (hardcoded uvicorn launch lines per merchant)
++
++Adding a merchant (Phase 6) now means: add one MerchantSpec entry below,
++plus one mock_merchants/*.py file implementing it. Every consumer listed
++above derives its view from MERCHANTS instead of keeping its own copy, so
++there is exactly one place that can be wrong.
++
++Note: start_servers.ps1 (Windows launcher) is PowerShell, not Python, so it
++cannot import this module directly. It still needs its own Start-Job line
++added per merchant — see the comment at the top of that file.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class MerchantSpec:
++    payee: str
++    port: int
++    module: str  # dotted path to the FastAPI app, e.g. "mock_merchants.merchant_a_crm"
++    has_policy: bool = False          # exposes GET /policy
++    refund_needs_amount: bool = False  # /refund requires the caller to supply the computed amount
++
++    @property
++    def url(self) -> str:
++        return f"http://localhost:{self.port}"
++
++    @property
++    def app_target(self) -> str:
++        """uvicorn's `module:app` target string."""
++        return f"{self.module}:app"
++
++
++MERCHANTS: dict[str, MerchantSpec] = {
++    "merchant_a": MerchantSpec(
++        payee="CRM Corp",
++        port=8001,
++        module="mock_merchants.merchant_a_crm",
++    ),
++    "merchant_b": MerchantSpec(
++        payee="Grand Hotel",
++        port=8002,
++        module="mock_merchants.merchant_b_hotel",
++        has_policy=True,
++    ),
++    "merchant_c": MerchantSpec(
++        payee="Domain Registrar",
++        port=8003,
++        module="mock_merchants.merchant_c_domain",
++        has_policy=True,
++        refund_needs_amount=True,
++    ),
++}
++
++# Convenience derived views — kept so existing call sites that only ever
++# needed a plain dict of urls/payees don't need to touch MerchantSpec
++# directly.
++MERCHANT_URLS: dict[str, str] = {mid: m.url for mid, m in MERCHANTS.items()}
++MERCHANT_PAYEES: dict[str, str] = {mid: m.payee for mid, m in MERCHANTS.items()}
++MERCHANTS_WITH_POLICY: frozenset[str] = frozenset(
++    mid for mid, m in MERCHANTS.items() if m.has_policy
++)
++MERCHANTS_NEEDING_REFUND_AMOUNT: frozenset[str] = frozenset(
++    mid for mid, m in MERCHANTS.items() if m.refund_needs_amount
++)
+diff --git a/proxy/mcp_proxy.py b/proxy/mcp_proxy.py
+index 3218116..0ac3fa8 100644
+--- a/proxy/mcp_proxy.py
++++ b/proxy/mcp_proxy.py
+@@ -36,23 +36,16 @@ from state_log.redis_client import (
+     publish_event,
+ )
+ import db.client as db
++from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
+ 
+ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+ REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
+ PROXY_API_KEY = os.getenv("PROXY_API_KEY", "test-key-123")
+ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+ 
+-MERCHANT_URLS: dict[str, str] = {
+-    "merchant_a": "http://localhost:8001",
+-    "merchant_b": "http://localhost:8002",
+-    "merchant_c": "http://localhost:8003",
+-}
+-
+-MERCHANT_PAYEES: dict[str, str] = {
+-    "merchant_a": "CRM Corp",
+-    "merchant_b": "Grand Hotel",
+-    "merchant_c": "Domain Registrar",
+-}
++# MERCHANT_URLS / MERCHANT_PAYEES now come from mock_merchants/registry.py —
++# the single source of truth shared with compensating_agent/graph.py and the
++# process-launch scripts. Do not redeclare them here.
+ 
+ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
+ 
+diff --git a/run_bg.py b/run_bg.py
+index ea35d44..f2b6001 100644
+--- a/run_bg.py
++++ b/run_bg.py
+@@ -2,10 +2,13 @@
+ import time
+ import sys
+ 
++from mock_merchants.registry import MERCHANTS
++
+ print("Starting Services...")
+-subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_a_crm:app", "--port", "8001"])
+-subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_b_hotel:app", "--port", "8002"])
+-subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_c_domain:app", "--port", "8003"])
++for merchant_id, spec in MERCHANTS.items():
++    subprocess.Popen(
++        [sys.executable, "-m", "uvicorn", spec.app_target, "--port", str(spec.port)]
++    )
+ subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.policy_service:app", "--port", "8004"])
+ subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.anomaly_service:app", "--port", "8005"])
+ subprocess.Popen([sys.executable, "-m", "uvicorn", "proxy.mcp_proxy:app", "--port", "8000"])
+diff --git a/run_demo.py b/run_demo.py
+index 554a61a..1963131 100644
+--- a/run_demo.py
++++ b/run_demo.py
+@@ -4,6 +4,8 @@ import subprocess
+ import sys
+ import time
+ 
++from mock_merchants.registry import MERCHANTS
++
+ REQUIRED_PORTS = {
+     "Redis (redis-aegis)": ("localhost", int(os.getenv("REDIS_PORT", "6380"))),
+     "Postgres (postgres-aegis)": ("localhost", int(os.getenv("PG_PORT", "5433"))),
+@@ -53,9 +55,10 @@ check_infra_or_exit()
+ 
+ procs = []
+ print("Starting Merchants...")
+-procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_a_crm:app", "--port", "8001"]))
+-procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_b_hotel:app", "--port", "8002"]))
+-procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_c_domain:app", "--port", "8003"]))
++for merchant_id, spec in MERCHANTS.items():
++    procs.append(subprocess.Popen(
++        [sys.executable, "-m", "uvicorn", spec.app_target, "--port", str(spec.port)]
++    ))
+ 
+ print("Starting Services...")
+ procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.policy_service:app", "--port", "8004"]))
+@@ -64,13 +67,14 @@ procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "proxy.mcp_proxy
+ procs.append(subprocess.Popen([sys.executable, "-m", "compensating_agent.worker"]))
+ 
+ APP_PORTS = {
+-    "Merchant A (CRM)": ("localhost", 8001),
+-    "Merchant B (Hotel)": ("localhost", 8002),
+-    "Merchant C (Domain)": ("localhost", 8003),
++    f"{merchant_id} ({spec.payee})": ("localhost", spec.port)
++    for merchant_id, spec in MERCHANTS.items()
++}
++APP_PORTS.update({
+     "Policy extractor service": ("localhost", 8004),
+     "Anomaly detector service": ("localhost", 8005),
+     "Aegis MCP Proxy": ("localhost", 8000),
+-}
++})
+ 
+ 
+ def check_app_ports_or_exit() -> None:
+diff --git a/start_servers.ps1 b/start_servers.ps1
+index 4450a66..ba4303b 100644
+--- a/start_servers.ps1
++++ b/start_servers.ps1
+@@ -1,5 +1,17 @@
+ ﻿$root = $PSScriptRoot
+ 
++# Mirrors mock_merchants/registry.py's MERCHANTS dict. PowerShell can't
++# import that Python module directly, so this list is a second, manually
++# kept copy — if you add/change a merchant in registry.py, update this one
++# line-for-line too. Every other consumer (proxy, compensating_agent/graph.py,
++# run_demo.py, run_bg.py) derives from registry.py automatically; this file
++# is the one remaining place that needs a manual edit.
++$merchants = @(
++    @{ Module = "mock_merchants.merchant_a_crm"; Port = 8001 },
++    @{ Module = "mock_merchants.merchant_b_hotel"; Port = 8002 },
++    @{ Module = "mock_merchants.merchant_c_domain"; Port = 8003 }
++)
++
+ # Pre-flight cleanup. Without this, re-running the script after a previous
+ # session (whose jobs are still tracked, or whose child python processes
+ # were orphaned when the window was closed instead of properly stopped)
+@@ -14,7 +26,7 @@ Get-Job | Stop-Job -ErrorAction SilentlyContinue
+ Get-Job | Remove-Job -ErrorAction SilentlyContinue
+ 
+ Write-Host "Checking for stale processes still holding required ports..."
+-$requiredPorts = 8000, 8001, 8002, 8003, 8004, 8005
++$requiredPorts = @(8000, 8004, 8005) + ($merchants | ForEach-Object { $_.Port })
+ foreach ($port in $requiredPorts) {
+     $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+     foreach ($c in $conns) {
+@@ -28,9 +40,9 @@ docker compose up -d redis-aegis postgres-aegis rabbitmq-aegis
+ Start-Sleep -Seconds 5
+ 
+ Write-Host "Starting Mock Merchants..."
+-Start-Job { param($r) Set-Location $r; python -m uvicorn mock_merchants.merchant_a_crm:app --port 8001 } -ArgumentList $root | Out-Null
+-Start-Job { param($r) Set-Location $r; python -m uvicorn mock_merchants.merchant_b_hotel:app --port 8002 } -ArgumentList $root | Out-Null
+-Start-Job { param($r) Set-Location $r; python -m uvicorn mock_merchants.merchant_c_domain:app --port 8003 } -ArgumentList $root | Out-Null
++foreach ($m in $merchants) {
++    Start-Job { param($r, $mod, $p) Set-Location $r; python -m uvicorn "${mod}:app" --port $p } -ArgumentList $root, $m.Module, $m.Port | Out-Null
++}
+ 
+ Write-Host "Starting Services..."
+ Start-Job { param($r) Set-Location $r; python -m uvicorn engine.policy_service:app --port 8004 } -ArgumentList $root | Out-Null

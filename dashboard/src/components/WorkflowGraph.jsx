@@ -47,11 +47,8 @@ function AegisNode({ data }) {
 
 const nodeTypes = { aegis: AegisNode };
 
-const MERCHANT_NODES = [
-  { id: "merchant_a", label: "CRM Corp", subLabel: "₹10,000", x: 100, y: 120 },
-  { id: "merchant_b", label: "Grand Hotel", subLabel: "₹20,000", x: 320, y: 120 },
-  { id: "merchant_c", label: "Domain / Flights", subLabel: "₹12,000", x: 540, y: 120 },
-];
+const NODE_X_SPACING = 220;
+const NODE_Y = 120;
 
 const COMP_NODE_LABELS = {
   load_workflow_log:       "Load Log",
@@ -72,17 +69,22 @@ const COMP_NODE_LABELS = {
   anomaly_check:           "Anomaly Check (LLM, advisory)",
 };
 
-export default function WorkflowGraph({ nodeStates, compensationNodes }) {
+export default function WorkflowGraph({ merchants, nodeStates, compensationNodes }) {
   const showCompensation = compensationNodes.length > 0;
 
   const nodes = useMemo(() => {
-    const result = MERCHANT_NODES.map((m) => ({
+    const result = merchants.map((m, i) => ({
       id: m.id,
       type: "aegis",
-      position: { x: m.x, y: m.y },
+      position: { x: 100 + i * NODE_X_SPACING, y: NODE_Y },
       data: {
-        label: m.label,
-        subLabel: m.subLabel,
+        // Fall back to a generic "Merchant X ₹Y" label when a merchant's
+        // real payee name hasn't arrived yet (e.g. a payment_attempt event
+        // was missed) rather than rendering a blank box — see Phase 5.1
+        // acceptance check: any workflow_id's merchants should render
+        // correctly, not just the ones the original demo used.
+        label: m.label || `Merchant ${m.id.replace(/^merchant_/, "").toUpperCase()}`,
+        subLabel: m.subLabel || (m.amount != null ? `₹${m.amount.toLocaleString("en-IN")}` : undefined),
         status: nodeStates[m.id] || "pending",
       },
     }));
@@ -107,18 +109,28 @@ export default function WorkflowGraph({ nodeStates, compensationNodes }) {
     }
 
     return result;
-  }, [nodeStates, compensationNodes, showCompensation]);
+  }, [merchants, nodeStates, compensationNodes, showCompensation]);
 
   const edges = useMemo(() => {
-    const e = [
-      { id: "a-b", source: "merchant_a", target: "merchant_b", animated: true, style: { stroke: "#58a6ff" } },
-      { id: "b-c", source: "merchant_b", target: "merchant_c", animated: true, style: { stroke: "#58a6ff" } },
-    ];
-
-    if (showCompensation) {
+    // Chain each merchant to the next in the order they were first seen
+    // (the order payment_attempt events arrived), instead of a hardcoded
+    // a→b→c chain — this is what actually lets a workflow with a
+    // different merchant set/count render a sensible flow.
+    const e = [];
+    for (let i = 0; i < merchants.length - 1; i++) {
       e.push({
-        id: "c-comp",
-        source: "merchant_c",
+        id: `${merchants[i].id}-${merchants[i + 1].id}`,
+        source: merchants[i].id,
+        target: merchants[i + 1].id,
+        animated: true,
+        style: { stroke: "#58a6ff" },
+      });
+    }
+
+    if (showCompensation && merchants.length > 0) {
+      e.push({
+        id: "last-comp",
+        source: merchants[merchants.length - 1].id,
         target: `comp_${compensationNodes[0]?.id}`,
         animated: true,
         style: { stroke: "#f85149", strokeDasharray: "5 5" },
@@ -139,7 +151,7 @@ export default function WorkflowGraph({ nodeStates, compensationNodes }) {
     }
 
     return e;
-  }, [nodes, compensationNodes, showCompensation]);
+  }, [merchants, compensationNodes, showCompensation]);
 
   return (
     <div className="flex-1 relative" style={{ background: "#0d1117" }}>

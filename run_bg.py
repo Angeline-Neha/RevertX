@@ -2,10 +2,13 @@
 import time
 import sys
 
+from mock_merchants.registry import MERCHANTS
+
 print("Starting Services...")
-subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_a_crm:app", "--port", "8001"])
-subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_b_hotel:app", "--port", "8002"])
-subprocess.Popen([sys.executable, "-m", "uvicorn", "mock_merchants.merchant_c_domain:app", "--port", "8003"])
+for merchant_id, spec in MERCHANTS.items():
+    subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", spec.app_target, "--port", str(spec.port)]
+    )
 subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.policy_service:app", "--port", "8004"])
 subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.anomaly_service:app", "--port", "8005"])
 subprocess.Popen([sys.executable, "-m", "uvicorn", "proxy.mcp_proxy:app", "--port", "8000"])

@@ -39,6 +39,11 @@ from state_log.redis_client import (
     publish_event,
     write_compensation_trace,
 )
+from mock_merchants.registry import (
+    MERCHANT_URLS,
+    MERCHANTS_WITH_POLICY,
+    MERCHANTS_NEEDING_REFUND_AMOUNT,
+)
 import structlog
 from prometheus_client import Counter, REGISTRY
 
@@ -94,16 +99,11 @@ REFUND_FAILURE_METRIC = _get_or_create_counter(
 )
 
 # ---------------------------------------------------------------------------
-# Merchant base URLs
+# Merchant base URLs, policy-endpoint membership, and refund-payload shape
+# all come from mock_merchants/registry.py — the single source of truth
+# shared with proxy/mcp_proxy.py and the process-launch scripts. Do not
+# redeclare MERCHANT_URLS / MERCHANTS_WITH_POLICY here.
 # ---------------------------------------------------------------------------
-MERCHANT_URLS: dict[str, str] = {
-    "merchant_a": "http://localhost:8001",
-    "merchant_b": "http://localhost:8002",
-    "merchant_c": "http://localhost:8003",
-}
-
-# Merchants that have a /policy endpoint
-MERCHANTS_WITH_POLICY: frozenset[str] = frozenset({"merchant_b", "merchant_c"})
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +361,7 @@ async def attempt_refund_node(state: CompensationState) -> dict:
 
     try:
         payload: dict[str, Any] = {"settlement_ref": settlement_ref}
-        if merchant_id == "merchant_c":
+        if merchant_id in MERCHANTS_NEEDING_REFUND_AMOUNT:
             payload["amount"] = refund_amount
 
         async with httpx.AsyncClient(timeout=10.0) as client:

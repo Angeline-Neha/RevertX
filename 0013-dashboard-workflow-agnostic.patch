@@ -1,0 +1,357 @@
+diff --git a/dashboard/src/App.jsx b/dashboard/src/App.jsx
+index 9bec129..4743c63 100644
+--- a/dashboard/src/App.jsx
++++ b/dashboard/src/App.jsx
+@@ -30,12 +30,14 @@ export default function App() {
+   const [inputId, setInputId] = useState("");
+   const [connected, setConnected] = useState(false);
+   const [terminalLines, setTerminalLines] = useState([]);
++  const [merchants, setMerchants] = useState([]);
+   const [nodeStates, setNodeStates] = useState({});
+   const [compensationNodes, setCompensationNodes] = useState([]);
+   const [llmStream, setLlmStream] = useState("");
+   const [mathLine, setMathLine] = useState(null);
+   const [endState, setEndState] = useState(null);
+   const [budget, setBudget] = useState({ used: 0, limit: 0 });
++  const [recentWorkflows, setRecentWorkflows] = useState([]);
+   const wsRef = useRef(null);
+ 
+   const log = useCallback((msg) => {
+@@ -43,6 +45,25 @@ export default function App() {
+     setTerminalLines((prev) => [...prev.slice(-200), `[${ts}] ${msg}`]);
+   }, []);
+ 
++  const proxyApiKey = import.meta.env.VITE_PROXY_API_KEY || "test-key-123";
++
++  // Fetches the recent-workflows list for the picker panel shown on the
++  // "no workflow connected" screen (Phase 5.2) — click-to-connect instead
++  // of pasting a UUID copied from the demo client's terminal output.
++  const fetchRecentWorkflows = useCallback(async () => {
++    try {
++      const resp = await fetch("http://localhost:8000/workflows?limit=20", {
++        headers: { "X-API-Key": proxyApiKey },
++      });
++      if (!resp.ok) return;
++      const data = await resp.json();
++      setRecentWorkflows(data.workflows || []);
++    } catch {
++      // Proxy not reachable yet — the picker just stays empty; the manual
++      // paste field below it still works as a fallback.
++    }
++  }, [proxyApiKey]);
++
+   // Clears every piece of per-workflow state. Must run before connecting to
+   // ANY workflow_id (including the very first one on mount) — otherwise
+   // switching workflows (typing a new UUID, or reloading with a different
+@@ -51,6 +72,7 @@ export default function App() {
+   // top of them instead of starting clean.
+   const resetWorkflowState = useCallback(() => {
+     setTerminalLines([]);
++    setMerchants([]);
+     setNodeStates({});
+     setCompensationNodes([]);
+     setLlmStream("");
+@@ -62,7 +84,6 @@ export default function App() {
+   const connectWS = useCallback((wid) => {
+     if (wsRef.current) wsRef.current.close();
+     resetWorkflowState();
+-    const proxyApiKey = import.meta.env.VITE_PROXY_API_KEY || "test-key-123";
+     const ws = new WebSocket(`ws://localhost:8000/ws/${wid}?token=${proxyApiKey}`);
+     wsRef.current = ws;
+ 
+@@ -87,6 +108,20 @@ export default function App() {
+   function handleEvent(msg) {
+     const { event_type, data } = msg;
+ 
++    // Adds a merchant box to the graph the first time this workflow_id
++    // mentions it, in the order merchants are first seen — replaces the
++    // old hardcoded 3-box MERCHANT_NODES array (Phase 5.1). Fine for the
++    // final label/amount to arrive slightly after the box first appears
++    // (WorkflowGraph.jsx falls back to a generic label until then).
++    function upsertMerchant(id, payee, amount) {
++      if (!id) return;
++      setMerchants((prev) =>
++        prev.some((m) => m.id === id)
++          ? prev
++          : [...prev, { id, label: payee, amount }]
++      );
++    }
++
+     switch (event_type) {
+       case "workflow_init":
+         setBudget({ used: 0, limit: data.budget_limit });
+@@ -94,6 +129,7 @@ export default function App() {
+         break;
+ 
+       case "payment_attempt":
++        upsertMerchant(data.merchant_id, data.payee, data.amount);
+         log(`→ Paying ${data.merchant_id} — ₹${data.amount.toLocaleString("en-IN")} (${data.item})`);
+         setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "in_progress" }));
+         break;
+@@ -110,8 +146,16 @@ export default function App() {
+         break;
+ 
+       case "mandate_exceeded":
++        // A mandate-rejected payment never reaches the "3. Forward to
++        // Merchant" step in mcp_proxy.py, so no payment_attempt event ever
++        // fires for it — this is the only place this merchant's box gets
++        // created. merchant_id/payee were previously missing from this
++        // event entirely (the dashboard just hardcoded "merchant_c" here),
++        // which silently broke for any workflow whose budget-busting step
++        // wasn't literally merchant_c.
++        upsertMerchant(data.merchant_id, data.payee, data.amount);
+         log(`✗ MANDATE EXCEEDED — ₹${data.amount} rejected. Budget: ₹${data.budget_used} / ₹${data.budget_limit}`);
+-        setNodeStates((prev) => ({ ...prev, merchant_c: "failed" }));
++        setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "failed" }));
+         break;
+ 
+       case "compensation_started":
+@@ -198,12 +242,12 @@ export default function App() {
+     }
+   }
+ 
+-  function connect() {
+-    const wid = inputId.trim();
+-    if (!wid) return;
+-    setWorkflowId(wid);
+-    window.location.hash = wid;
+-    connectWS(wid);
++  function connect(wid) {
++    const target = (wid || inputId).trim();
++    if (!target) return;
++    setWorkflowId(target);
++    window.location.hash = target;
++    connectWS(target);
+   }
+ 
+   useEffect(() => {
+@@ -211,6 +255,14 @@ export default function App() {
+     return () => wsRef.current?.close();
+   }, []);
+ 
++  // Populate the workflow picker whenever the "no workflow connected"
++  // screen is showing — on first load, and again after a workflow
++  // disconnects — so a demo operator always sees an up-to-date list
++  // instead of a stale one from whenever the page first mounted.
++  useEffect(() => {
++    if (!workflowId) fetchRecentWorkflows();
++  }, [workflowId, fetchRecentWorkflows]);
++
+   if (!workflowId) {
+     return (
+       <div className="flex flex-col items-center justify-center h-screen gap-4">
+@@ -226,7 +278,7 @@ export default function App() {
+           />
+           <button
+             className="bg-[var(--blue)] text-black font-semibold px-4 py-2 rounded text-sm hover:opacity-90"
+-            onClick={connect}
++            onClick={() => connect()}
+           >
+             Connect
+           </button>
+@@ -234,6 +286,34 @@ export default function App() {
+         <p className="text-xs text-[var(--text-muted)]">
+           Run <code className="bg-[var(--bg-secondary)] px-1 py-0.5 rounded">python primary_agent/procurement_agent.py</code> to start a demo workflow
+         </p>
++
++        {recentWorkflows.length > 0 && (
++          <div className="w-[420px] mt-4 bg-[var(--bg-secondary)] border border-[var(--border)] rounded overflow-hidden">
++            <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border)] flex items-center justify-between">
++              Recent workflows
++              <button
++                className="text-[var(--blue)] normal-case font-normal hover:underline"
++                onClick={fetchRecentWorkflows}
++              >
++                refresh
++              </button>
++            </div>
++            <div className="max-h-64 overflow-y-auto">
++              {recentWorkflows.map((w) => (
++                <button
++                  key={w.workflow_id}
++                  className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-primary)] border-b border-[var(--border)] last:border-b-0 flex items-center justify-between"
++                  onClick={() => connect(w.workflow_id)}
++                >
++                  <span className="font-mono truncate">{w.workflow_id}</span>
++                  <span className="text-[var(--text-muted)] ml-2 shrink-0">
++                    ₹{Number(w.budget_used).toLocaleString("en-IN")} / ₹{Number(w.budget_limit).toLocaleString("en-IN")}
++                  </span>
++                </button>
++              ))}
++            </div>
++          </div>
++        )}
+       </div>
+     );
+   }
+@@ -248,7 +328,7 @@ export default function App() {
+ 
+         {/* Center — Workflow Graph */}
+         <div className="flex-1 flex flex-col overflow-hidden">
+-          <WorkflowGraph nodeStates={nodeStates} compensationNodes={compensationNodes} />
++          <WorkflowGraph merchants={merchants} nodeStates={nodeStates} compensationNodes={compensationNodes} />
+         </div>
+ 
+         {/* Right — Reasoning Stream */}
+diff --git a/dashboard/src/components/WorkflowGraph.jsx b/dashboard/src/components/WorkflowGraph.jsx
+index cc453d8..db3fe8b 100644
+--- a/dashboard/src/components/WorkflowGraph.jsx
++++ b/dashboard/src/components/WorkflowGraph.jsx
+@@ -47,11 +47,8 @@ function AegisNode({ data }) {
+ 
+ const nodeTypes = { aegis: AegisNode };
+ 
+-const MERCHANT_NODES = [
+-  { id: "merchant_a", label: "CRM Corp", subLabel: "₹10,000", x: 100, y: 120 },
+-  { id: "merchant_b", label: "Grand Hotel", subLabel: "₹20,000", x: 320, y: 120 },
+-  { id: "merchant_c", label: "Domain / Flights", subLabel: "₹12,000", x: 540, y: 120 },
+-];
++const NODE_X_SPACING = 220;
++const NODE_Y = 120;
+ 
+ const COMP_NODE_LABELS = {
+   load_workflow_log:       "Load Log",
+@@ -72,17 +69,22 @@ const COMP_NODE_LABELS = {
+   anomaly_check:           "Anomaly Check (LLM, advisory)",
+ };
+ 
+-export default function WorkflowGraph({ nodeStates, compensationNodes }) {
++export default function WorkflowGraph({ merchants, nodeStates, compensationNodes }) {
+   const showCompensation = compensationNodes.length > 0;
+ 
+   const nodes = useMemo(() => {
+-    const result = MERCHANT_NODES.map((m) => ({
++    const result = merchants.map((m, i) => ({
+       id: m.id,
+       type: "aegis",
+-      position: { x: m.x, y: m.y },
++      position: { x: 100 + i * NODE_X_SPACING, y: NODE_Y },
+       data: {
+-        label: m.label,
+-        subLabel: m.subLabel,
++        // Fall back to a generic "Merchant X ₹Y" label when a merchant's
++        // real payee name hasn't arrived yet (e.g. a payment_attempt event
++        // was missed) rather than rendering a blank box — see Phase 5.1
++        // acceptance check: any workflow_id's merchants should render
++        // correctly, not just the ones the original demo used.
++        label: m.label || `Merchant ${m.id.replace(/^merchant_/, "").toUpperCase()}`,
++        subLabel: m.subLabel || (m.amount != null ? `₹${m.amount.toLocaleString("en-IN")}` : undefined),
+         status: nodeStates[m.id] || "pending",
+       },
+     }));
+@@ -107,18 +109,28 @@ export default function WorkflowGraph({ nodeStates, compensationNodes }) {
+     }
+ 
+     return result;
+-  }, [nodeStates, compensationNodes, showCompensation]);
++  }, [merchants, nodeStates, compensationNodes, showCompensation]);
+ 
+   const edges = useMemo(() => {
+-    const e = [
+-      { id: "a-b", source: "merchant_a", target: "merchant_b", animated: true, style: { stroke: "#58a6ff" } },
+-      { id: "b-c", source: "merchant_b", target: "merchant_c", animated: true, style: { stroke: "#58a6ff" } },
+-    ];
++    // Chain each merchant to the next in the order they were first seen
++    // (the order payment_attempt events arrived), instead of a hardcoded
++    // a→b→c chain — this is what actually lets a workflow with a
++    // different merchant set/count render a sensible flow.
++    const e = [];
++    for (let i = 0; i < merchants.length - 1; i++) {
++      e.push({
++        id: `${merchants[i].id}-${merchants[i + 1].id}`,
++        source: merchants[i].id,
++        target: merchants[i + 1].id,
++        animated: true,
++        style: { stroke: "#58a6ff" },
++      });
++    }
+ 
+-    if (showCompensation) {
++    if (showCompensation && merchants.length > 0) {
+       e.push({
+-        id: "c-comp",
+-        source: "merchant_c",
++        id: "last-comp",
++        source: merchants[merchants.length - 1].id,
+         target: `comp_${compensationNodes[0]?.id}`,
+         animated: true,
+         style: { stroke: "#f85149", strokeDasharray: "5 5" },
+@@ -139,7 +151,7 @@ export default function WorkflowGraph({ nodeStates, compensationNodes }) {
+     }
+ 
+     return e;
+-  }, [nodes, compensationNodes, showCompensation]);
++  }, [merchants, compensationNodes, showCompensation]);
+ 
+   return (
+     <div className="flex-1 relative" style={{ background: "#0d1117" }}>
+diff --git a/db/client.py b/db/client.py
+index 678dd4f..70c2a08 100644
+--- a/db/client.py
++++ b/db/client.py
+@@ -240,6 +240,36 @@ async def get_budget_state(workflow_id: str) -> tuple[float, float]:
+         return 0.0, 0.0
+ 
+ 
++async def list_recent_workflows(limit: int = 20) -> list[dict[str, Any]]:
++    """
++    Most-recently-created workflows, newest first — backs the dashboard's
++    workflow picker panel (Phase 5.2) so connecting no longer requires
++    pasting a UUID copied from a terminal. `status` and budget fields are
++    read straight from the `workflows` row (no per-step joins), so this
++    stays cheap even as transaction_steps grows.
++    """
++    async with pool.acquire() as conn:
++        rows = await conn.fetch(
++            """
++            SELECT workflow_id, budget_limit, budget_used, status, created_at
++            FROM workflows
++            ORDER BY created_at DESC
++            LIMIT $1
++            """,
++            limit,
++        )
++        return [
++            {
++                "workflow_id": r["workflow_id"],
++                "budget_limit": r["budget_limit"],
++                "budget_used": r["budget_used"],
++                "status": r["status"],
++                "created_at": r["created_at"].isoformat(),
++            }
++            for r in rows
++        ]
++
++
+ async def get_idempotency_response(idem_key: str) -> dict[str, Any] | None:
+     async with pool.acquire() as conn:
+         row = await conn.fetchrow("SELECT response_body FROM idempotency_keys WHERE idempotency_key = $1", idem_key)
+diff --git a/proxy/mcp_proxy.py b/proxy/mcp_proxy.py
+index 0ac3fa8..b268562 100644
+--- a/proxy/mcp_proxy.py
++++ b/proxy/mcp_proxy.py
+@@ -159,6 +159,7 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
+         
+         publish_event(wid, "mandate_exceeded", {
+             "step_id": failing_entry.step_id, "amount": amount,
++            "merchant_id": merchant_id, "payee": payee, "item": item,
+             "budget_used": current_used, "budget_limit": current_limit,
+         })
+         
+@@ -257,6 +258,16 @@ def get_workflow(workflow_id: str):
+     return {"workflow_id": workflow_id, "steps": [s.model_dump() for s in steps]}
+ 
+ 
++@app.get("/workflows", dependencies=[Depends(verify_api_key)])
++async def list_workflows(limit: int = 20):
++    """Recent workflows for the dashboard's workflow picker (Phase 5.2) —
++    lets the dashboard offer a click-to-connect list instead of requiring a
++    UUID pasted from the demo client's terminal output."""
++    limit = max(1, min(limit, 100))
++    workflows = await db.list_recent_workflows(limit=limit)
++    return {"workflows": workflows}
++
++
+ @app.websocket("/ws/{workflow_id}")
+ async def websocket_endpoint(websocket: WebSocket, workflow_id: str, token: str = Query(None)):
+     if token != PROXY_API_KEY:

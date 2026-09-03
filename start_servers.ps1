@@ -1,5 +1,17 @@
 ﻿$root = $PSScriptRoot
 
+# Mirrors mock_merchants/registry.py's MERCHANTS dict. PowerShell can't
+# import that Python module directly, so this list is a second, manually
+# kept copy — if you add/change a merchant in registry.py, update this one
+# line-for-line too. Every other consumer (proxy, compensating_agent/graph.py,
+# run_demo.py, run_bg.py) derives from registry.py automatically; this file
+# is the one remaining place that needs a manual edit.
+$merchants = @(
+    @{ Module = "mock_merchants.merchant_a_crm"; Port = 8001 },
+    @{ Module = "mock_merchants.merchant_b_hotel"; Port = 8002 },
+    @{ Module = "mock_merchants.merchant_c_domain"; Port = 8003 }
+)
+
 # Pre-flight cleanup. Without this, re-running the script after a previous
 # session (whose jobs are still tracked, or whose child python processes
 # were orphaned when the window was closed instead of properly stopped)
@@ -14,7 +26,7 @@ Get-Job | Stop-Job -ErrorAction SilentlyContinue
 Get-Job | Remove-Job -ErrorAction SilentlyContinue
 
 Write-Host "Checking for stale processes still holding required ports..."
-$requiredPorts = 8000, 8001, 8002, 8003, 8004, 8005
+$requiredPorts = @(8000, 8004, 8005) + ($merchants | ForEach-Object { $_.Port })
 foreach ($port in $requiredPorts) {
     $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     foreach ($c in $conns) {
@@ -28,9 +40,9 @@ docker compose up -d redis-aegis postgres-aegis rabbitmq-aegis
 Start-Sleep -Seconds 5
 
 Write-Host "Starting Mock Merchants..."
-Start-Job { param($r) Set-Location $r; python -m uvicorn mock_merchants.merchant_a_crm:app --port 8001 } -ArgumentList $root | Out-Null
-Start-Job { param($r) Set-Location $r; python -m uvicorn mock_merchants.merchant_b_hotel:app --port 8002 } -ArgumentList $root | Out-Null
-Start-Job { param($r) Set-Location $r; python -m uvicorn mock_merchants.merchant_c_domain:app --port 8003 } -ArgumentList $root | Out-Null
+foreach ($m in $merchants) {
+    Start-Job { param($r, $mod, $p) Set-Location $r; python -m uvicorn "${mod}:app" --port $p } -ArgumentList $root, $m.Module, $m.Port | Out-Null
+}
 
 Write-Host "Starting Services..."
 Start-Job { param($r) Set-Location $r; python -m uvicorn engine.policy_service:app --port 8004 } -ArgumentList $root | Out-Null

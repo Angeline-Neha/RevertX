@@ -240,6 +240,36 @@ async def get_budget_state(workflow_id: str) -> tuple[float, float]:
         return 0.0, 0.0
 
 
+async def list_recent_workflows(limit: int = 20) -> list[dict[str, Any]]:
+    """
+    Most-recently-created workflows, newest first — backs the dashboard's
+    workflow picker panel (Phase 5.2) so connecting no longer requires
+    pasting a UUID copied from a terminal. `status` and budget fields are
+    read straight from the `workflows` row (no per-step joins), so this
+    stays cheap even as transaction_steps grows.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT workflow_id, budget_limit, budget_used, status, created_at
+            FROM workflows
+            ORDER BY created_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+        return [
+            {
+                "workflow_id": r["workflow_id"],
+                "budget_limit": r["budget_limit"],
+                "budget_used": r["budget_used"],
+                "status": r["status"],
+                "created_at": r["created_at"].isoformat(),
+            }
+            for r in rows
+        ]
+
+
 async def get_idempotency_response(idem_key: str) -> dict[str, Any] | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT response_body FROM idempotency_keys WHERE idempotency_key = $1", idem_key)
