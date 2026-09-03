@@ -5,6 +5,20 @@ Level 4: Anomaly and Triage model for human review.
 import asyncio
 import json
 import os
+
+# This module runs inside its own separate process (anomaly_service.py,
+# started as `python -m uvicorn engine.anomaly_service:app`) — a distinct
+# process from the one running policy_extractor.py/policy_service.py, with
+# its own environment. policy_extractor.py calls load_dotenv() before
+# reading GEMINI_API_KEY (see its own top-of-file comment); this file never
+# did, so GEMINI_API_KEY below was always "" here even when correctly set
+# in .env, silently falling back to get_client() returning None ("[Warn]
+# GEMINI_API_KEY not set. Using dummy client.") on every single run — the
+# anomaly service was never actually calling Gemini, regardless of whether
+# a real key existed.
+from dotenv import load_dotenv
+load_dotenv()
+
 from google import genai
 from google.genai import types
 
@@ -68,6 +82,7 @@ async def flag_anomalies(workflow_id: str, steps: list[dict]) -> dict:
     This is for human review ONLY and does not affect the actual transaction logic.
     """
     steps_json = json.dumps(steps, indent=2)
+    raw_output = None
     try:
         raw_output = await asyncio.to_thread(_sync_anomaly_check, steps_json)
         data = json.loads(raw_output)
@@ -76,5 +91,12 @@ async def flag_anomalies(workflow_id: str, steps: list[dict]) -> dict:
             "reason": str(data.get("reason", ""))
         }
     except Exception as exc:
-        print(f"[Warn] Anomaly detector failed: {exc}")
+        # raw_output is included here because this has genuinely been seen
+        # to fail with a bare, uninformative exception (e.g. a KeyError
+        # whose message alone doesn't say what Gemini actually returned).
+        # Since response_schema is a raw dict (not a types.Schema object),
+        # the SDK's own structured-output handling is the most likely
+        # source if this triggers again — seeing the actual raw_output
+        # text makes that immediately diagnosable instead of guesswork.
+        print(f"[Warn] Anomaly detector failed: {exc} | raw_output={raw_output!r}")
         return {"is_anomalous": False, "reason": f"Detector error: {exc}"}

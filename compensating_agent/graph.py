@@ -232,7 +232,20 @@ async def extract_policy_terms_node(state: CompensationState) -> dict:
     # Decoupled via HTTP microservice
     policy_url = os.getenv("POLICY_SERVICE_URL", "http://localhost:8004")
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # policy_extractor.py's extract_policy_terms() does its own 2-attempt
+        # retry loop against the real Gemini call, with no per-attempt
+        # timeout override — each attempt can reasonably take a while,
+        # especially on a slower/free-tier connection or a cold start. The
+        # old 10.0s here covers the ENTIRE round trip (both attempts), so
+        # it can fire before policy_extractor.py's own retry/fail-safe
+        # logic — which produces a specific, useful reason (auth error,
+        # quota, model-not-found, etc.) — ever gets to finish. The result
+        # was a generic, message-less httpx.ReadTimeout from THIS boundary
+        # masking whatever the real underlying error actually was. 40s
+        # gives real headroom for 2 genuine attempts; this node only runs
+        # once per undo step in a saga that's already failed, so a slower
+        # worst case here doesn't block anything time-critical.
+        async with httpx.AsyncClient(timeout=40.0) as client:
             resp = await client.post(f"{policy_url}/extract", json={"policy_text": policy_text, "workflow_id": wid})
             resp.raise_for_status()
             terms_data = resp.json()
