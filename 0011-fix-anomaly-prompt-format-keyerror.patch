@@ -1,0 +1,31 @@
+diff --git a/engine/anomaly_detector.py b/engine/anomaly_detector.py
+index ebed24c..e4b4324 100644
+--- a/engine/anomaly_detector.py
++++ b/engine/anomaly_detector.py
+@@ -46,11 +46,25 @@ Look for:
+ - Unusual merchant routing logic that doesn't make business sense.
+ 
+ Output valid JSON only matching this schema:
+-{"is_anomalous": bool, "reason": "A brief 1-2 sentence explanation if anomalous, or empty string"}
++{{"is_anomalous": bool, "reason": "A brief 1-2 sentence explanation if anomalous, or empty string"}}
+ 
+ Workflow Steps Data:
+ {steps_data}
+ """
++# The doubled {{ }} above are deliberate, not a typo: this is a Python
++# str.format() template, and .format() treats ANY unescaped {...} as a
++# field to substitute — not just the intended {steps_data} placeholder.
++# With single braces, the literal JSON example text itself
++# ({"is_anomalous": bool, ...}) was being parsed as a replacement field
++# named literally '"is_anomalous"' (quotes included — format field names
++# are read as raw text), and .format(steps_data=...) had no such keyword
++# argument, raising KeyError('"is_anomalous"'). This is the actual root
++# cause of the anomaly-detector crash — confirmed by reproducing it
++# directly against this exact template — not response_schema, which was
++# an earlier, plausible-but-wrong guess. Doubling the braces here tells
++# .format() to treat them as literal { and } in the output rather than a
++# field to fill in; {steps_data} stays single-braced since that ARE the
++# one real substitution this template needs.
+ 
+ def _sync_anomaly_check(steps_data: str) -> str:
+     client = get_client()

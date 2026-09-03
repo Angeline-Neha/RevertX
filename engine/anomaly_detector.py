@@ -46,31 +46,50 @@ Look for:
 - Unusual merchant routing logic that doesn't make business sense.
 
 Output valid JSON only matching this schema:
-{"is_anomalous": bool, "reason": "A brief 1-2 sentence explanation if anomalous, or empty string"}
+{{"is_anomalous": bool, "reason": "A brief 1-2 sentence explanation if anomalous, or empty string"}}
 
 Workflow Steps Data:
 {steps_data}
 """
+# The doubled {{ }} above are deliberate, not a typo: this is a Python
+# str.format() template, and .format() treats ANY unescaped {...} as a
+# field to substitute — not just the intended {steps_data} placeholder.
+# With single braces, the literal JSON example text itself
+# ({"is_anomalous": bool, ...}) was being parsed as a replacement field
+# named literally '"is_anomalous"' (quotes included — format field names
+# are read as raw text), and .format(steps_data=...) had no such keyword
+# argument, raising KeyError('"is_anomalous"'). This is the actual root
+# cause of the anomaly-detector crash — confirmed by reproducing it
+# directly against this exact template — not response_schema, which was
+# an earlier, plausible-but-wrong guess. Doubling the braces here tells
+# .format() to treat them as literal { and } in the output rather than a
+# field to fill in; {steps_data} stays single-braced since that ARE the
+# one real substitution this template needs.
 
 def _sync_anomaly_check(steps_data: str) -> str:
     client = get_client()
     if client is None:
         return '{"is_anomalous": false, "reason": "No API key"}'
 
+    # Previously passed response_schema (a raw dict, not a types.Schema
+    # object) alongside response_mime_type="application/json" — this is the
+    # only Gemini call site in the codebase that did. policy_extractor.py
+    # (the only other Gemini call in this system, and the one that's
+    # confirmed working end-to-end) relies purely on the prompt itself
+    # asking for JSON (see _ANOMALY_PROMPT above, which already does the
+    # same) plus response_mime_type, with no response_schema at all. The
+    # observed failure — a bare KeyError('"is_anomalous"'), with the actual
+    # API call never completing (raw_output stayed None, confirmed via the
+    # diagnostic logging added just before this fix) — points at the SDK's
+    # own raw-dict schema handling, not at anything wrong with the request
+    # itself or the response content. Dropping response_schema here matches
+    # the one Gemini call path already proven reliable in this exact repo.
     response = client.models.generate_content(
         model="gemini-3.6-flash",
         contents=_ANOMALY_PROMPT.format(steps_data=steps_data),
         config=types.GenerateContentConfig(
             temperature=0.0,
             response_mime_type="application/json",
-            response_schema={
-                "type": "OBJECT",
-                "properties": {
-                    "is_anomalous": {"type": "BOOLEAN"},
-                    "reason": {"type": "STRING"}
-                },
-                "required": ["is_anomalous", "reason"]
-            }
         ),
     )
     return response.text or '{"is_anomalous": false, "reason": "Empty response"}'
