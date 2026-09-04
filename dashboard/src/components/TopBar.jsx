@@ -1,3 +1,5 @@
+import BeforeAfterToggle from "./BeforeAfterToggle.jsx";
+
 export default function TopBar({ workflowId, budget, connected, onNewRun }) {
   const pct = budget.limit > 0 ? (budget.used / budget.limit) * 100 : 0;
   const barColor = pct > 90 ? "#f85149" : pct > 70 ? "#d29922" : "#3fb950";
@@ -13,6 +15,9 @@ export default function TopBar({ workflowId, budget, connected, onNewRun }) {
       </div>
 
       <div className="flex items-center gap-6">
+        {/* Phase 9.1 — Before/After Aegis toggle */}
+        <BeforeAfterToggle />
+
         {/* Budget meter */}
         <div className="text-right">
           <div className="text-xs text-[var(--text-muted)] mb-1">Budget</div>

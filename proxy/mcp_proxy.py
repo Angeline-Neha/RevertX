@@ -69,6 +69,27 @@ app = FastAPI(title="Aegis MCP Proxy", lifespan=lifespan)
 metrics_app = make_asgi_app()
 app.mount("/metrics", metrics_app)
 
+# Phase 9.1 — before/after toggle. When False, mandate_exceeded still rejects
+# the payment (budget enforcement is always on) but does NOT trigger the
+# compensation worker, so the money stays stranded — which is exactly the
+# "without Aegis" state the demo toggle shows before flipping it back on.
+# Lives in process memory (not DB) because it's a demo-time mode switch, not
+# production config — it resets on every proxy restart, which is the right
+# default for a live demo where you want a clean slate each time.
+_aegis_enabled: bool = True
+
+
+class AegisModeRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/aegis_mode", dependencies=[Depends(verify_api_key)])
+def set_aegis_mode(req: AegisModeRequest):
+    """Phase 9.1 — flips the compensation trigger on/off without restarting."""
+    global _aegis_enabled
+    _aegis_enabled = req.enabled
+    return {"aegis_enabled": _aegis_enabled}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -166,7 +187,14 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
             "budget_used": current_used, "budget_limit": current_limit,
         })
         
-        await publish_compensation_request(wid, failing_entry.model_dump())
+        await publish_compensation_request(wid, failing_entry.model_dump()) if _aegis_enabled else None
+        # Publish an event so the dashboard toggle can show the "Aegis OFF — money stranded"
+        # state visually, rather than just having nothing happen after the 403.
+        if not _aegis_enabled:
+            publish_event(wid, "aegis_disabled_no_compensation", {
+                "workflow_id": wid,
+                "message": "Aegis is OFF — compensation not triggered. Money is stranded.",
+            })
         await async_redis.aclose()
         
         return JSONResponse(status_code=403, content={
@@ -269,6 +297,20 @@ async def list_workflows(limit: int = 20):
     limit = max(1, min(limit, 100))
     workflows = await db.list_recent_workflows(limit=limit)
     return {"workflows": workflows}
+
+
+@app.get("/session_metrics")
+async def session_metrics():
+    """Phase 9.2 — live running counter: total ₹ auto-recovered + disputes resolved.
+    No auth required so the dashboard can poll it without the API key header from
+    a plain fetch() — the numbers are non-sensitive aggregate metrics."""
+    return await db.get_session_metrics()
+
+
+@app.get("/aegis_status")
+def aegis_status():
+    """Phase 9.1 — lets the dashboard read the current Aegis on/off state on connect."""
+    return {"aegis_enabled": _aegis_enabled}
 
 
 # Repo root — same resolution primary_agent/procurement_agent.py uses for

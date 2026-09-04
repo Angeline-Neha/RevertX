@@ -28,17 +28,27 @@ function Start-Service($module, $port, $name) {
 
 New-Item -ItemType Directory -Force -Path "$dir\logs" | Out-Null
 
-Start-Service "mock_merchants.merchant_a_crm:app"   8001 "merchant_a"
-Start-Service "mock_merchants.merchant_b_hotel:app"  8002 "merchant_b"
-Start-Service "mock_merchants.merchant_c_domain:app" 8003 "merchant_c"
+Start-Service "mock_merchants.merchant_a_crm:app"     8001 "merchant_a"
+Start-Service "mock_merchants.merchant_b_hotel:app"   8002 "merchant_b"
+Start-Service "mock_merchants.merchant_c_domain:app"  8003 "merchant_c"
+Start-Service "engine.policy_service:app"             8004 "policy_service"
+# Phase 6 merchants — partial-penalty, flaky, and event-launch vendor set
+Start-Service "mock_merchants.merchant_d_flexstay:app" 8006 "merchant_d"
+Start-Service "mock_merchants.merchant_e_flaky:app"    8007 "merchant_e"
+Start-Service "mock_merchants.merchant_f_venue:app"    8008 "merchant_f"
+Start-Service "mock_merchants.merchant_g_catering:app" 8009 "merchant_g"
 Start-Sleep -Seconds 1
-Start-Service "proxy.mcp_proxy:app"                  8000 "proxy"
+Start-Service "proxy.mcp_proxy:app"                    8000 "proxy"
 Start-Sleep -Seconds 4
 
-# Health check
+# Start compensation worker in a visible window so logs are easy to watch during demo
+Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir'; python -X utf8 -m compensating_agent.worker`""
+Write-Host "  Started compensation worker (visible window)" -ForegroundColor DarkGray
+
+# Health check — all services
 Write-Host ""
 $allOk = $true
-@(8000,8001,8002,8003) | ForEach-Object {
+@(8000,8001,8002,8003,8004,8006,8007,8008,8009) | ForEach-Object {
     $port = $_
     try {
         $null = Invoke-WebRequest "http://localhost:$port/docs" -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop

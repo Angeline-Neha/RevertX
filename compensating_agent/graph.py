@@ -378,6 +378,22 @@ def compute_refund_amount_node(state: CompensationState) -> dict:
         math_line += f"  [{conditions}]"
 
     publish_event(wid, "math_computation", {"formula": math_line, "is_fail_safe": is_fail_safe})
+
+    # Phase 10.2 — when the result is a fail-safe default (LLM call/parse
+    # failed, or /policy endpoint unreachable) rather than a confident
+    # extraction, the dashboard should show this distinctly from a merchant
+    # whose policy genuinely says "non-refundable" — both produce
+    # refund_amount=None, but one is a known answer and the other is
+    # "we don't know, so we defaulted closed." Surface it so a human reviewer
+    # can decide whether to override the default manually.
+    if is_fail_safe:
+        publish_event(wid, "human_escalation_required", {
+            "workflow_id": wid,
+            "merchant_id": state["current_step"].get("merchant_id", "unknown"),
+            "reason": conditions or "Policy extraction failed — defaulted to non-refundable.",
+            "step_id": state["current_step"].get("step_id", ""),
+        })
+
     _trace(wid, "compute_refund_amount", "end", {"refund_amount": amount, "formula": math_line})
     return {"refund_amount": amount}
 
@@ -446,6 +462,25 @@ async def attempt_refund_node(state: CompensationState) -> dict:
             }
             publish_event(wid, "refund_success", result)
             REFUND_SUCCESS_METRIC.labels(merchant_id=merchant_id).inc()
+            # Phase 9.2 — write a refund row so get_session_metrics() can
+            # aggregate total ₹ recovered without a separate table. Uses the
+            # same transaction_steps table the proxy already uses for payment
+            # steps, with action_type='refund' to distinguish from payments.
+            try:
+                import uuid as _uuid
+                from proxy.schemas import ActualPayment, ExpectedPayment, TransactionLogEntry
+                refund_entry = TransactionLogEntry(
+                    step_id=str(_uuid.uuid4()),
+                    workflow_id=wid,
+                    action_type="refund",
+                    merchant_id=merchant_id,
+                    expected=ExpectedPayment(amount=refund_amount, currency="INR", payee=merchant_id, item="refund"),
+                    actual=ActualPayment(amount=refund_amount, currency="INR", payee=merchant_id, settlement_ref=settlement_ref, status="refunded"),
+                    raw_gateway_response={},
+                )
+                db.write_transaction_step_sync(refund_entry.model_dump(), idem_key=None)
+            except Exception:
+                pass  # metrics write failure must never affect compensation outcome
         else:
             result = {
                 "step_id": step["step_id"],

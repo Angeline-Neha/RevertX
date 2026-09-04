@@ -72,7 +72,24 @@ async def main() -> None:
         connection = await aio_pika.connect_robust("amqp://guest:guest@localhost:5673/")
         async with connection:
             channel = await connection.channel()
-            queue = await channel.declare_queue("compensation_requests", auto_delete=False)
+            # Dead-letter queue — receives messages that exceeded the max-delivery
+            # count, so a stale/broken workflow_id can't loop forever in the main
+            # queue (as happened with 780f6f74 in the previous session).
+            dlq = await channel.declare_queue(
+                "compensation_requests_dlq",
+                auto_delete=False,
+                durable=True,
+            )
+            queue = await channel.declare_queue(
+                "compensation_requests",
+                auto_delete=False,
+                durable=True,
+                arguments={
+                    "x-delivery-limit": 5,          # aio-pika / RabbitMQ Streams DLQ cap
+                    "x-dead-letter-exchange": "",    # default exchange
+                    "x-dead-letter-routing-key": "compensation_requests_dlq",
+                },
+            )
 
             logger.info("Worker started. Listening for compensation_requests...")
             await queue.consume(lambda message: process_message(message, graph))

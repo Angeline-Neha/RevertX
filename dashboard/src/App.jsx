@@ -37,6 +37,7 @@ export default function App() {
   const [llmStream, setLlmStream] = useState("");
   const [mathLine, setMathLine] = useState(null);
   const [endState, setEndState] = useState(null);
+  const [escalation, setEscalation] = useState(null);  // Phase 10.2
   const [budget, setBudget] = useState({ used: 0, limit: 0 });
   const [recentWorkflows, setRecentWorkflows] = useState([]);
   const wsRef = useRef(null);
@@ -79,6 +80,7 @@ export default function App() {
     setLlmStream("");
     setMathLine(null);
     setEndState(null);
+    setEscalation(null);
     setBudget({ used: 0, limit: 0 });
   }, []);
 
@@ -238,6 +240,26 @@ export default function App() {
         log(`✗ Aegis compensation ERROR: ${data.error}`);
         break;
 
+      // Phase 10.2 — policy extraction fell back to the fail-safe non-refundable
+      // default (LLM failed, /policy endpoint unreachable, etc.). This is
+      // visually distinct from a merchant whose policy genuinely says non-refundable.
+      case "human_escalation_required":
+        setEscalation(data);
+        log(`⚠ HUMAN REVIEW REQUIRED — ${data.merchant_id}: ${data.reason}`);
+        break;
+
+      // Phase 9.1 — Aegis was OFF when the budget limit fired. Money is
+      // stranded with no compensation triggered — this is exactly what a
+      // world without Aegis looks like.
+      case "aegis_disabled_no_compensation":
+        log(`🔴 AEGIS OFF — ${data.message}`);
+        setEndState({
+          type: "aegis_disabled",
+          label: "Aegis OFF — Money Stranded, No Compensation",
+          payload: { message: data.message, workflow_id: data.workflow_id },
+        });
+        break;
+
       default:
         break;
     }
@@ -344,6 +366,28 @@ export default function App() {
       </div>
 
       <MetricsBar metrics={BATCH_METRICS} />
+
+      {/* Phase 10.2 — human escalation amber banner (policy fail-safe triggered) */}
+      {escalation && (
+        <div
+          className="absolute bottom-16 left-1/2 -translate-x-1/2 z-40 rounded-lg px-5 py-3 text-sm shadow-2xl flex items-start gap-3 max-w-lg"
+          style={{ background: "#2a1f00", border: "1px solid #d29922", color: "#d29922" }}
+        >
+          <span className="text-xl shrink-0">⚠️</span>
+          <div>
+            <div className="font-semibold mb-0.5">Flagged for Human Review</div>
+            <div className="text-xs opacity-80">
+              Policy extraction failed for <strong>{escalation.merchant_id}</strong> — defaulted to non-refundable.
+              A human should verify whether a refund applies.
+            </div>
+            <div className="text-xs opacity-60 mt-1 font-mono break-all">{escalation.reason}</div>
+          </div>
+          <button
+            className="ml-auto shrink-0 opacity-60 hover:opacity-100"
+            onClick={() => setEscalation(null)}
+          >✕</button>
+        </div>
+      )}
 
       {endState && <EndStatePanel data={endState} onClose={() => setEndState(null)} />}
     </div>
