@@ -9,7 +9,11 @@
 $merchants = @(
     @{ Module = "mock_merchants.merchant_a_crm"; Port = 8001 },
     @{ Module = "mock_merchants.merchant_b_hotel"; Port = 8002 },
-    @{ Module = "mock_merchants.merchant_c_domain"; Port = 8003 }
+    @{ Module = "mock_merchants.merchant_c_domain"; Port = 8003 },
+    @{ Module = "mock_merchants.merchant_d_flexstay"; Port = 8006 },
+    @{ Module = "mock_merchants.merchant_e_flaky"; Port = 8007 },
+    @{ Module = "mock_merchants.merchant_f_venue"; Port = 8008 },
+    @{ Module = "mock_merchants.merchant_g_catering"; Port = 8009 }
 )
 
 # Pre-flight cleanup. Without this, re-running the script after a previous

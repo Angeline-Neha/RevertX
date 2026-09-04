@@ -1,0 +1,436 @@
+diff --git a/.env.example b/.env.example
+index f57a7cf..e498245 100644
+--- a/.env.example
++++ b/.env.example
+@@ -46,6 +46,14 @@ ALLOWED_ORIGINS=http://localhost:5173
+ POLICY_SERVICE_URL=http://localhost:8004
+ ANOMALY_SERVICE_URL=http://localhost:8005
+ 
++# --- Planning agent (Phase 7) ----------------------------------------
++# Read in: primary_agent/planner.py. Only used when procurement_agent.py
++# is run with --goal (the fixed-script demo path doesn't call the
++# planner at all, so these have no effect on it). Both have working
++# defaults — you don't need to set either.
++PLANNER_MODEL=gemini-3.5-flash-lite
++PLANNER_TEMPERATURE=0.4
++
+ # --- Dashboard (Vite — this file is for the Python side; the dashboard
+ #     needs its OWN .env inside dashboard/, since Vite only picks up
+ #     VITE_-prefixed vars from a .env file in its own project root) -----
+diff --git a/primary_agent/catalog.py b/primary_agent/catalog.py
+new file mode 100644
+index 0000000..35f45c3
+--- /dev/null
++++ b/primary_agent/catalog.py
+@@ -0,0 +1,57 @@
++# -*- coding: utf-8 -*-
++"""
++primary_agent/catalog.py
++Merchant catalog for the planning agent (Phase 7.1) — a small, structured
++list of what's actually purchasable in this demo, built from the merchants
++that exist in mock_merchants/registry.py after Phase 6.
++
++Each entry gives the planner (primary_agent/planner.py) what it needs to
++choose sensibly: what the merchant sells, a typical price so amounts stay
++plausible instead of invented from nothing, and the merchant_id that maps
++straight onto mock_merchants/registry.py / proxy's /pay endpoint — no
++separate lookup or translation step between "what the planner picked" and
++"what /pay actually calls".
++
++typical_cost is a demo-reasonable single figure, not a range — this keeps
++the planner's guardrail check in planner.py (amounts must stay within a
++band of typical_cost) simple, and matches the ballpark figures already
++used in the original scripted procurement_agent.py.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++from mock_merchants.registry import MERCHANTS
++
++
++@dataclass(frozen=True)
++class CatalogEntry:
++    merchant_id: str
++    payee: str
++    sells: str          # short description of what this merchant sells
++    typical_cost: float  # demo-reasonable ballpark price in INR
++    sample_item: str    # example item string, passed through to /pay as-is
++
++
++MERCHANT_CATALOG: list[CatalogEntry] = [
++    CatalogEntry("merchant_a", MERCHANTS["merchant_a"].payee, "CRM software licensing", 10000.0, "CRM license (annual)"),
++    CatalogEntry("merchant_b", MERCHANTS["merchant_b"].payee, "hotel booking, non-refundable within 7 days of booking", 20000.0, "hotel booking (2 nights)"),
++    CatalogEntry("merchant_c", MERCHANTS["merchant_c"].payee, "domain registration, hosting, and similar non-refundable-window digital goods", 12000.0, "domain registration + hosting"),
++    CatalogEntry("merchant_d", MERCHANTS["merchant_d"].payee, "hotel booking with flexible (partial-penalty) cancellation", 20000.0, "hotel booking, flexible cancellation"),
++    CatalogEntry("merchant_e", MERCHANTS["merchant_e"].payee, "print and signage services", 8000.0, "signage printing"),
++    CatalogEntry("merchant_f", MERCHANTS["merchant_f"].payee, "event venue rental, always non-refundable", 25000.0, "venue booking"),
++    CatalogEntry("merchant_g", MERCHANTS["merchant_g"].payee, "event catering", 15000.0, "catering"),
++]
++
++# Fast lookup by id — planner.py validates every LLM-chosen merchant_id
++# against this before it's allowed anywhere near a real /pay call.
++CATALOG_BY_ID: dict[str, CatalogEntry] = {c.merchant_id: c for c in MERCHANT_CATALOG}
++
++
++def catalog_prompt_block() -> str:
++    """Renders the catalog as plain text for the planner's prompt."""
++    lines = [
++        f"- {c.merchant_id} ({c.payee}): sells {c.sells}. Typical price ~₹{c.typical_cost:,.0f}."
++        for c in MERCHANT_CATALOG
++    ]
++    return "\n".join(lines)
+diff --git a/primary_agent/planner.py b/primary_agent/planner.py
+new file mode 100644
+index 0000000..ba38312
+--- /dev/null
++++ b/primary_agent/planner.py
+@@ -0,0 +1,234 @@
++# -*- coding: utf-8 -*-
++"""
++primary_agent/planner.py
++Phase 7.2 — the planning LLM call that replaces procurement_agent.py's
++fixed 3-payment script with something that takes a goal in plain English
++and decides the payment sequence itself.
++
++Config-driven (model, temperature) and uses the same 2-attempt
++retry/backoff shape as engine/policy_extractor.py — see that file's
++docstrings for why: a chunk of Gemini failures are transient, and
++distinguishing "the API call itself failed" from "it returned something
++we couldn't parse" makes the failure reason visible instead of a generic
++500 with no detail.
++
++Guardrails (Phase 7.4), enforced in code after the LLM responds, not just
++requested in the prompt:
++  - every merchant_id must be a real entry in primary_agent/catalog.py —
++    any hallucinated id is dropped, not passed through to /pay
++  - amount must fall within PLAN_AMOUNT_BAND of that merchant's
++    typical_cost — bounds how far a bad LLM guess can drift from something
++    plausible
++  - line items are capped at MAX_LINE_ITEMS
++  - if the LLM call fails outright (both attempts) or every returned line
++    item fails validation, plan_procurement() falls back to a deterministic
++    greedy plan built straight from the catalog (see _fallback_plan) rather
++    than raising in the middle of a live demo — same fail-safe philosophy
++    as policy_extractor.py's _FAIL_SAFE, applied to planning instead of
++    refund-eligibility extraction.
++"""
++from __future__ import annotations
++
++import asyncio
++import json
++import os
++from dataclasses import dataclass, asdict
++
++from dotenv import load_dotenv
++load_dotenv()
++
++from google import genai
++from google.genai import types
++import structlog
++
++from primary_agent.catalog import MERCHANT_CATALOG, CATALOG_BY_ID, catalog_prompt_block
++
++logger = structlog.get_logger()
++
++GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
++PLANNER_MODEL = os.environ.get("PLANNER_MODEL", "gemini-3.5-flash-lite")
++# Some temperature (rather than 0.0, which anomaly_detector.py uses for a
++# pure classification task) so the planner can pick a sensibly different
++# subset of the catalog for different goals instead of always converging
++# on the same items — but low enough that the demo doesn't get a wildly
++# different plan every run.
++PLANNER_TEMPERATURE = float(os.environ.get("PLANNER_TEMPERATURE", "0.4"))
++
++MAX_LINE_ITEMS = 4
++# Allowed drift from a catalog entry's typical_cost, e.g. 0.5 = 50%-150%
++# of typical_cost.
++PLAN_AMOUNT_BAND = 0.5
++
++_client: genai.Client | None = None
++
++
++def _get_client() -> genai.Client:
++    global _client
++    if _client is None:
++        _client = genai.Client(api_key=GEMINI_API_KEY)
++    return _client
++
++
++_PLANNER_PROMPT = """\
++You are a procurement planning assistant. Given a goal and a budget limit,
++choose which items to purchase from the catalog below to accomplish the
++goal. You may go over budget if that's a natural reading of the goal —
++the caller's own budget-enforcement layer (not you) decides what happens
++in that case.
++
++Catalog (merchant_id, what it sells, typical price):
++{catalog}
++
++Rules:
++- Only use merchant_id values that appear in the catalog above verbatim.
++- Choose at most {max_items} line items.
++- Keep each amount reasonably close to that merchant's typical price
++  (roughly half to one and a half times it) — don't invent arbitrary
++  figures unrelated to the catalog.
++- Order the list in the sequence payments should be attempted.
++
++Goal: {goal}
++Budget limit: ₹{budget_limit:,.0f}
++
++Output schema — return ONLY a JSON array, nothing else:
++[
++  {{"merchant_id": "...", "amount": number, "item": "short item description"}}
++]
++"""
++
++
++@dataclass
++class PlannedPayment:
++    merchant_id: str
++    amount: float
++    item: str
++
++    def to_dict(self) -> dict:
++        return asdict(self)
++
++
++def _sync_plan_call(prompt: str) -> str:
++    client = _get_client()
++    resp = client.models.generate_content(
++        model=PLANNER_MODEL,
++        contents=prompt,
++        config=types.GenerateContentConfig(
++            response_mime_type="application/json",
++            temperature=PLANNER_TEMPERATURE,
++        ),
++    )
++    return resp.text or ""
++
++
++def _validate_and_clamp(raw_items: list[dict]) -> list[PlannedPayment]:
++    """Applies the Phase 7.4 guardrails to whatever the LLM returned.
++    Silently drops individual line items that fail validation rather than
++    failing the whole plan for one bad entry — a demo showing 2 good items
++    beats a demo showing an error because item 3 of 3 was malformed."""
++    valid: list[PlannedPayment] = []
++    for raw in raw_items[:MAX_LINE_ITEMS]:
++        try:
++            merchant_id = str(raw["merchant_id"])
++            amount = float(raw["amount"])
++            item = str(raw.get("item") or CATALOG_BY_ID[merchant_id].sample_item)
++        except (KeyError, TypeError, ValueError):
++            continue
++
++        catalog_entry = CATALOG_BY_ID.get(merchant_id)
++        if catalog_entry is None:
++            logger.warning("planner.dropped_unknown_merchant", merchant_id=merchant_id)
++            continue
++
++        low = catalog_entry.typical_cost * (1 - PLAN_AMOUNT_BAND)
++        high = catalog_entry.typical_cost * (1 + PLAN_AMOUNT_BAND)
++        if not (low <= amount <= high):
++            logger.warning(
++                "planner.dropped_out_of_band_amount",
++                merchant_id=merchant_id, amount=amount, low=low, high=high,
++            )
++            continue
++
++        valid.append(PlannedPayment(merchant_id=merchant_id, amount=round(amount, 2), item=item))
++
++    return valid
++
++
++def _fallback_plan(budget_limit: float) -> list[PlannedPayment]:
++    """
++    Deterministic plan used when the LLM call fails outright, or every
++    returned line item fails validation. Greedily adds catalog items
++    (in the order they're declared in catalog.py) while the running total
++    stays under budget_limit, then adds exactly one more on top — same
++    shape as the original scripted demo (two items comfortably in budget,
++    a third that deliberately pushes over), so a live demo still gets a
++    real MANDATE EXCEEDED / compensation moment instead of a silently
++    empty or trivially-in-budget plan.
++    """
++    plan: list[PlannedPayment] = []
++    total = 0.0
++    for entry in MERCHANT_CATALOG:
++        if len(plan) >= MAX_LINE_ITEMS:
++            break
++        plan.append(PlannedPayment(entry.merchant_id, entry.typical_cost, entry.sample_item))
++        total += entry.typical_cost
++        if total > budget_limit:
++            break
++    return plan
++
++
++async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPayment]:
++    """
++    Input: a plain-English goal + a budget limit.
++    Output: an ordered list of PlannedPayment, chosen from the catalog and
++    validated against it — never invented merchants or wildly off amounts.
++    Falls back to a deterministic plan (see _fallback_plan) rather than
++    raising, matching this codebase's existing fail-safe-over-crash
++    philosophy for LLM call sites.
++    """
++    prompt = _PLANNER_PROMPT.format(
++        catalog=catalog_prompt_block(),
++        max_items=MAX_LINE_ITEMS,
++        goal=goal,
++        budget_limit=budget_limit,
++    )
++
++    last_api_exc: Exception | None = None
++
++    for attempt in range(2):
++        try:
++            raw_text = await asyncio.to_thread(_sync_plan_call, prompt)
++            data = json.loads(raw_text)
++            if not isinstance(data, list):
++                raise ValueError("Expected a JSON array of line items")
++
++            plan = _validate_and_clamp(data)
++            if plan:
++                logger.info("planner.plan_generated", goal=goal, line_items=len(plan))
++                return plan
++
++            # Every item was dropped by guardrails — treat like a parse
++            # failure and retry once before falling back.
++            raise ValueError("No valid line items survived guardrail validation")
++
++        except (json.JSONDecodeError, ValueError, KeyError) as exc:
++            logger.warning("planner.parse_or_validation_failure", attempt=attempt, error=str(exc))
++            if attempt == 1:
++                break
++            continue
++
++        except Exception as exc:
++            last_api_exc = exc
++            logger.error(
++                "planner.api_call_failed",
++                attempt=attempt, error_type=type(exc).__name__, error=str(exc),
++            )
++            if attempt == 1:
++                break
++            await asyncio.sleep(1.5)
++            continue
++
++    logger.warning(
++        "planner.falling_back_to_deterministic_plan",
++        goal=goal, last_api_error=str(last_api_exc) if last_api_exc else None,
++    )
++    return _fallback_plan(budget_limit)
+diff --git a/primary_agent/procurement_agent.py b/primary_agent/procurement_agent.py
+index b027190..af47785 100644
+--- a/primary_agent/procurement_agent.py
++++ b/primary_agent/procurement_agent.py
+@@ -38,6 +38,7 @@ if _REPO_ROOT not in sys.path:
+     sys.path.insert(0, _REPO_ROOT)
+ 
+ from db.client import reset_workflow
++from primary_agent.planner import plan_procurement
+ 
+ PROXY_URL = "http://localhost:8000"
+ # PROXY_API_KEY is the canonical variable name — it's what proxy/mcp_proxy.py
+@@ -153,8 +154,99 @@ async def run_procurement(workflow_id: str | None = None) -> None:
+         print(f"[Aegis Demo] Connect the dashboard to ws://localhost:8000/ws/{wid} to see live events.")
+ 
+ 
++async def _pay(client: httpx.AsyncClient, wid: str, merchant_id: str, amount: float, payee: str, item: str) -> dict:
++    """Shared /pay call + console reporting, used by both the fixed script
++    above and the goal-driven planner path below — Phase 7.3's point that
++    a real planning agent needs zero changes to the proxy call itself,
++    only to what decides the merchant/amount/item ahead of time."""
++    print(f"[Primary Agent] Paying {merchant_id} ({payee}) — ₹{amount:,.0f} ({item}) ...")
++    resp = await client.post(f"{PROXY_URL}/pay", headers=HEADERS, json={
++        "workflow_id": wid,
++        "idempotency_key": str(uuid.uuid4()),
++        "merchant_id": merchant_id,
++        "expected": {
++            "amount": amount,
++            "currency": "INR",
++            "payee": payee,
++            "item": item,
++        },
++    })
++
++    if resp.status_code == 403:
++        error = resp.json()
++        print(f"\n  ✗ HARD FAILURE: {error.get('error_type')}")
++        print(f"    {error.get('detail')}")
++        return {"status_code": 403, "error": error}
++
++    data = resp.json()
++    recon = data.get("reconciliation", {})
++    budget = data.get("budget", {})
++    print(f"  → Settlement: {data.get('merchant_response', {}).get('settlement_ref')}")
++    print(f"  → Reconciliation: {'✓ MATCH' if recon.get('match') else '✗ MISMATCH: ' + str(recon.get('mismatch_type'))}")
++    print(f"  → Budget used: ₹{budget.get('used', 0):,.0f} / ₹{budget.get('limit', 0):,.0f}\n")
++    return {"status_code": resp.status_code, "data": data}
++
++
++async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id: str | None = None) -> None:
++    """
++    Phase 7 — goal-driven replacement for the fixed script above.
++    Calls primary_agent/planner.py to turn a plain-English goal + budget
++    into an ordered payment list, then feeds that list into the exact same
++    /pay proxy calls run_procurement() already makes (via the shared _pay
++    helper above) — no changes to the proxy, budget tracking, or Aegis
++    compensation, matching Phase 7.3.
++    """
++    wid = workflow_id or str(uuid.uuid4())
++
++    if workflow_id is not None:
++        print(f"[Aegis Demo] Reusing workflow_id {wid} — resetting its budget/step state before running.")
++        await reset_workflow(wid)
++
++    from primary_agent.catalog import CATALOG_BY_ID
++
++    print(f"\n[Aegis Demo] Starting workflow {wid}")
++    print(f"[Aegis Demo] Goal: {goal} | Budget: ₹{budget_limit:,.0f}\n")
++
++    print("[Primary Agent] Asking the planner for a payment sequence...")
++    plan = await plan_procurement(goal, budget_limit)
++    if not plan:
++        print("[Primary Agent] Planner produced no usable line items — nothing to pay.")
++        return
++    print(f"[Primary Agent] Plan: {len(plan)} line item(s):")
++    for p in plan:
++        print(f"    - {p.merchant_id} ({CATALOG_BY_ID[p.merchant_id].payee}): ₹{p.amount:,.0f} — {p.item}")
++    print()
++
++    async with httpx.AsyncClient(timeout=30.0) as client:
++        await client.post(f"{PROXY_URL}/init_workflow", headers=HEADERS, json={
++            "workflow_id": wid,
++            "budget_limit": budget_limit,
++        })
++
++        for p in plan:
++            payee = CATALOG_BY_ID[p.merchant_id].payee
++            result = await _pay(client, wid, p.merchant_id, p.amount, payee, p.item)
++            if result["status_code"] == 403:
++                print("\n[Primary Agent] CRASHED — earlier payments are now stranded.")
++                print("[Aegis]         Compensating agent triggered automatically. Watch the dashboard.\n")
++                break
++
++        print(f"\n[Aegis Demo] Workflow ID: {wid}")
++        print(f"[Aegis Demo] Connect the dashboard to ws://localhost:8000/ws/{wid} to see live events.")
++
++
+ if __name__ == "__main__":
+-    wid = sys.argv[1] if len(sys.argv) > 1 else None
+-    asyncio.run(run_procurement(wid))
++    import argparse
++
++    parser = argparse.ArgumentParser(description="Run the RevertX/Aegis demo procurement agent.")
++    parser.add_argument("workflow_id", nargs="?", default=None, help="Reuse an existing workflow_id (resets its state first).")
++    parser.add_argument("--goal", default=None, help="Plain-English goal — runs the Phase 7 planner instead of the fixed demo script.")
++    parser.add_argument("--budget", type=float, default=35000.0, help="Budget limit for --goal runs (default ₹35,000).")
++    args = parser.parse_args()
++
++    if args.goal:
++        asyncio.run(run_procurement_with_plan(args.goal, args.budget, args.workflow_id))
++    else:
++        asyncio.run(run_procurement(args.workflow_id))
+ 
+ 

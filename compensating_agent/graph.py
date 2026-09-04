@@ -211,13 +211,49 @@ async def fetch_policy(state: CompensationState) -> dict:
         _trace(wid, "fetch_policy", "end", {"policy_text": policy_text})
         return {"policy_text": policy_text}
     except Exception as exc:
+        # A merchant that HAS a /policy endpoint but the call itself failed
+        # (timeout, 500, connection refused...) is a different situation
+        # from "this merchant has no policy endpoint at all" (merchant_a),
+        # and the two used to be indistinguishable: both left policy_text
+        # as None, which _route_after_fetch_policy sent straight to
+        # attempt_refund — silently treating an UNKNOWN policy the same as
+        # an EXPLICITLY unconditional one, i.e. defaulting to a full refund
+        # when the real answer might well have been "no refund at all".
+        # That's the opposite of the fail-safe philosophy used everywhere
+        # else here (extract_policy_terms_node above, compute_fault below):
+        # when in doubt, default to NOT issuing money / NOT filing a
+        # dispute, and say so explicitly rather than defaulting open.
+        # So: populate policy_terms directly with a fail-safe non-refundable
+        # verdict here. _route_after_fetch_policy below sends this case to
+        # compute_refund_amount_node (skipping extract_policy_terms_node —
+        # there's no text to run the extraction LLM on), which computes
+        # refund_amount=None from these terms and surfaces is_fail_safe=True
+        # on the dashboard exactly like an LLM-extraction failure would.
         _trace(wid, "fetch_policy", "error", {"error": str(exc)})
-        return {"policy_text": None}
+        return {
+            "policy_text": None,
+            "policy_terms": {
+                "refundable": False,
+                "penalty_percentage": None,
+                "conditions": (
+                    f"Could not reach merchant's /policy endpoint — defaulting to "
+                    f"non-refundable (fail-safe) rather than assuming full refund. "
+                    f"Reason: {type(exc).__name__}: {exc}"
+                ),
+                "is_fail_safe": True,
+            },
+        }
 
 
 def _route_after_fetch_policy(state: CompensationState) -> str:
     if state.get("policy_text"):
         return "extract_policy_terms"
+    if state.get("policy_terms") is not None:
+        # fetch_policy already produced fail-safe terms (the /policy call
+        # errored on a merchant that does have one) — go straight to the
+        # arithmetic node so is_fail_safe still surfaces on the dashboard,
+        # skipping extract_policy_terms since there's no text to extract.
+        return "compute_refund_amount"
     return "attempt_refund"
 
 
@@ -593,7 +629,11 @@ def build_graph(
     g.add_conditional_edges(
         "fetch_policy",
         _route_after_fetch_policy,
-        {"extract_policy_terms": "extract_policy_terms", "attempt_refund": "attempt_refund"},
+        {
+            "extract_policy_terms": "extract_policy_terms",
+            "compute_refund_amount": "compute_refund_amount",
+            "attempt_refund": "attempt_refund",
+        },
     )
 
     g.add_edge("extract_policy_terms", "compute_refund_amount")

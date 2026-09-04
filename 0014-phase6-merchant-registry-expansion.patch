@@ -1,0 +1,491 @@
+diff --git a/compensating_agent/graph.py b/compensating_agent/graph.py
+index 4fd7375..c9f7c32 100644
+--- a/compensating_agent/graph.py
++++ b/compensating_agent/graph.py
+@@ -211,13 +211,49 @@ async def fetch_policy(state: CompensationState) -> dict:
+         _trace(wid, "fetch_policy", "end", {"policy_text": policy_text})
+         return {"policy_text": policy_text}
+     except Exception as exc:
++        # A merchant that HAS a /policy endpoint but the call itself failed
++        # (timeout, 500, connection refused...) is a different situation
++        # from "this merchant has no policy endpoint at all" (merchant_a),
++        # and the two used to be indistinguishable: both left policy_text
++        # as None, which _route_after_fetch_policy sent straight to
++        # attempt_refund — silently treating an UNKNOWN policy the same as
++        # an EXPLICITLY unconditional one, i.e. defaulting to a full refund
++        # when the real answer might well have been "no refund at all".
++        # That's the opposite of the fail-safe philosophy used everywhere
++        # else here (extract_policy_terms_node above, compute_fault below):
++        # when in doubt, default to NOT issuing money / NOT filing a
++        # dispute, and say so explicitly rather than defaulting open.
++        # So: populate policy_terms directly with a fail-safe non-refundable
++        # verdict here. _route_after_fetch_policy below sends this case to
++        # compute_refund_amount_node (skipping extract_policy_terms_node —
++        # there's no text to run the extraction LLM on), which computes
++        # refund_amount=None from these terms and surfaces is_fail_safe=True
++        # on the dashboard exactly like an LLM-extraction failure would.
+         _trace(wid, "fetch_policy", "error", {"error": str(exc)})
+-        return {"policy_text": None}
++        return {
++            "policy_text": None,
++            "policy_terms": {
++                "refundable": False,
++                "penalty_percentage": None,
++                "conditions": (
++                    f"Could not reach merchant's /policy endpoint — defaulting to "
++                    f"non-refundable (fail-safe) rather than assuming full refund. "
++                    f"Reason: {type(exc).__name__}: {exc}"
++                ),
++                "is_fail_safe": True,
++            },
++        }
+ 
+ 
+ def _route_after_fetch_policy(state: CompensationState) -> str:
+     if state.get("policy_text"):
+         return "extract_policy_terms"
++    if state.get("policy_terms") is not None:
++        # fetch_policy already produced fail-safe terms (the /policy call
++        # errored on a merchant that does have one) — go straight to the
++        # arithmetic node so is_fail_safe still surfaces on the dashboard,
++        # skipping extract_policy_terms since there's no text to extract.
++        return "compute_refund_amount"
+     return "attempt_refund"
+ 
+ 
+@@ -593,7 +629,11 @@ def build_graph(
+     g.add_conditional_edges(
+         "fetch_policy",
+         _route_after_fetch_policy,
+-        {"extract_policy_terms": "extract_policy_terms", "attempt_refund": "attempt_refund"},
++        {
++            "extract_policy_terms": "extract_policy_terms",
++            "compute_refund_amount": "compute_refund_amount",
++            "attempt_refund": "attempt_refund",
++        },
+     )
+ 
+     g.add_edge("extract_policy_terms", "compute_refund_amount")
+diff --git a/mock_merchants/merchant_d_flexstay.py b/mock_merchants/merchant_d_flexstay.py
+new file mode 100644
+index 0000000..d31a527
+--- /dev/null
++++ b/mock_merchants/merchant_d_flexstay.py
+@@ -0,0 +1,90 @@
++"""
++mock_merchants/merchant_d_flexstay.py
++Merchant D — Flex-Stay Hotels (flexible-cancellation hotel).
++Behaviour: 30% cancellation fee if cancelled within 5 days of the booking
++date, otherwise fully refundable. This is the first merchant whose refund
++math is genuinely partial (Merchant C's 10% is also partial, but only within
++a 48-hour window sized for a fast demo turnaround — this one exercises a
++different window/percentage combo so the demo can show the math isn't
++hardcoded to one specific pair of numbers).
++Server-side validates the refund amount, same as Merchant C, to catch any
++LLM math errors before money moves.
++Port: 8006
++"""
++import uuid
++from datetime import datetime, timezone
++from fastapi import FastAPI, HTTPException
++from pydantic import BaseModel
++
++app = FastAPI(title="Merchant D — Flex-Stay Hotels")
++
++_charges: dict[str, dict] = {}
++
++POLICY_TEXT = (
++    "Bookings cancelled within 5 days of the booking date incur a 30% "
++    "cancellation fee on the original charge amount. Cancellations made "
++    "5 or more days after booking are fully refundable."
++)
++PENALTY_PERCENTAGE = 30.0
++PENALTY_WINDOW_DAYS = 5
++
++
++class ChargeRequest(BaseModel):
++    amount: float
++    item: str = "hotel booking (flexible)"
++    workflow_id: str = ""
++
++
++class RefundRequest(BaseModel):
++    settlement_ref: str
++    amount: float  # caller must supply the computed refund amount
++
++
++@app.post("/charge")
++def charge(req: ChargeRequest):
++    ref = f"flexstay_{uuid.uuid4().hex[:8]}"
++    booked_at = datetime.now(timezone.utc)
++    _charges[ref] = {"amount": req.amount, "booked_at": booked_at.isoformat()}
++    return {
++        "settlement_ref": ref,
++        "status": "settled",
++        "amount": req.amount,
++        "payee": "Flex-Stay Hotels",
++        "status_code": 200,
++    }
++
++
++@app.get("/policy")
++def get_policy(booking_date: str = ""):
++    return {"policy": POLICY_TEXT}
++
++
++@app.post("/refund")
++def refund(req: RefundRequest):
++    charge = _charges.get(req.settlement_ref)
++    if not charge:
++        raise HTTPException(status_code=404, detail="Settlement ref not found")
++
++    original = charge["amount"]
++    booked_at = datetime.fromisoformat(charge["booked_at"])
++    days_since_booking = (datetime.now(timezone.utc) - booked_at).days
++
++    if days_since_booking < PENALTY_WINDOW_DAYS:
++        expected_refund = round(original * (1 - PENALTY_PERCENTAGE / 100), 2)
++    else:
++        expected_refund = original
++
++    tolerance = 0.01  # floating-point tolerance
++    if abs(req.amount - expected_refund) > tolerance:
++        raise HTTPException(
++            status_code=422,
++            detail=(
++                f"Refund amount mismatch. "
++                f"Expected ₹{expected_refund} "
++                f"(original ₹{original}"
++                + (f" - {PENALTY_PERCENTAGE}% penalty" if days_since_booking < PENALTY_WINDOW_DAYS else "")
++                + f"), got ₹{req.amount}. Refund rejected."
++            ),
++        )
++
++    return {"status": "refunded", "amount": req.amount, "settlement_ref": req.settlement_ref}
+diff --git a/mock_merchants/merchant_e_flaky.py b/mock_merchants/merchant_e_flaky.py
+new file mode 100644
+index 0000000..827e306
+--- /dev/null
++++ b/mock_merchants/merchant_e_flaky.py
+@@ -0,0 +1,92 @@
++"""
++mock_merchants/merchant_e_flaky.py
++Merchant E — Apex Print & Signage (flaky vendor).
++Behaviour: charges and refunds normally (fully refundable, no penalty), but
++its /policy endpoint intermittently fails — alternating between a 500 and
++a request that hangs past the caller's client timeout (simulating a real
++gateway timeout), succeeding on every other call.
++
++Purpose: exercises compensating_agent/graph.py's fetch_policy fail-safe path
++(see the comment on that function) — a /policy call that errors is treated
++as an unknown-therefore-non-refundable outcome, not silently defaulted to a
++full refund. Also gives engine/anomaly_detector.py something real to flag
++instead of always seeing a clean run.
++
++Failure pattern: the counter below resets to 0 each time this process
++starts (run_demo.py/run_bg.py launch a fresh uvicorn process per merchant),
++so the FIRST call to /policy in any fresh demo run deterministically fails —
++this is what makes it usable as a reliable, repeatable demo trigger (see
++Phase 8's scenario 5) despite genuinely alternating pass/fail behaviour on
++subsequent calls within the same process lifetime, which is what "flaky"
++actually means here.
++Port: 8007
++"""
++import asyncio
++import uuid
++from datetime import datetime, timezone
++from fastapi import FastAPI, HTTPException, Response
++from pydantic import BaseModel
++
++app = FastAPI(title="Merchant E — Apex Print & Signage")
++
++_charges: dict[str, dict] = {}
++_policy_call_count = 0
++
++POLICY_TEXT = (
++    "Orders are fully refundable if cancelled before the print run begins."
++)
++
++
++class ChargeRequest(BaseModel):
++    amount: float
++    item: str = "signage printing"
++    workflow_id: str = ""
++
++
++class RefundRequest(BaseModel):
++    settlement_ref: str
++
++
++@app.post("/charge")
++def charge(req: ChargeRequest):
++    ref = f"apexprint_{uuid.uuid4().hex[:8]}"
++    _charges[ref] = {
++        "amount": req.amount,
++        "charged_at": datetime.now(timezone.utc).isoformat(),
++    }
++    return {
++        "settlement_ref": ref,
++        "status": "settled",
++        "amount": req.amount,
++        "payee": "Apex Print & Signage",
++        "status_code": 200,
++    }
++
++
++@app.get("/policy")
++async def get_policy():
++    global _policy_call_count
++    _policy_call_count += 1
++    call_number = _policy_call_count
++
++    if call_number % 2 == 1:
++        # Odd calls fail — alternate between the two failure modes the
++        # real world actually produces, so both branches of a caller's
++        # generic `except Exception` get exercised across repeated runs.
++        if (call_number // 2) % 2 == 0:
++            raise HTTPException(status_code=500, detail="Internal error fetching policy — please retry.")
++        else:
++            # compensating_agent/graph.py's fetch_policy uses a 10s client
++            # timeout; sleeping past that produces a real httpx.ReadTimeout
++            # on the caller side, not a simulated one.
++            await asyncio.sleep(15)
++
++    return {"policy": POLICY_TEXT}
++
++
++@app.post("/refund")
++def refund(req: RefundRequest):
++    charge = _charges.get(req.settlement_ref)
++    if not charge:
++        raise HTTPException(status_code=404, detail="Settlement ref not found")
++    return {"status": "refunded", "amount": charge["amount"], "settlement_ref": req.settlement_ref}
+diff --git a/mock_merchants/merchant_f_venue.py b/mock_merchants/merchant_f_venue.py
+new file mode 100644
+index 0000000..6b1838b
+--- /dev/null
++++ b/mock_merchants/merchant_f_venue.py
+@@ -0,0 +1,64 @@
++"""
++mock_merchants/merchant_f_venue.py
++Merchant F — Riverside Events Hall (venue booking).
++Behaviour: booking deposits are non-refundable under any circumstances —
++no time window, unlike Merchant B. Part of the "event launch" vendor set
++(Merchant F + merchant_g_catering.py) that proves nothing in the dashboard
++or compensation engine is hardcoded to the original CRM/Hotel/Domain names
++(Phase 6.3).
++Port: 8008
++"""
++import uuid
++from datetime import datetime, timezone
++from fastapi import FastAPI, HTTPException
++from pydantic import BaseModel
++
++app = FastAPI(title="Merchant F — Riverside Events Hall")
++
++_charges: dict[str, dict] = {}
++
++POLICY_TEXT = "Venue booking deposits are non-refundable under any circumstances."
++
++
++class ChargeRequest(BaseModel):
++    amount: float
++    item: str = "venue booking"
++    workflow_id: str = ""
++
++
++class RefundRequest(BaseModel):
++    settlement_ref: str
++
++
++@app.post("/charge")
++def charge(req: ChargeRequest):
++    ref = f"venue_{uuid.uuid4().hex[:8]}"
++    _charges[ref] = {
++        "amount": req.amount,
++        "charged_at": datetime.now(timezone.utc).isoformat(),
++    }
++    return {
++        "settlement_ref": ref,
++        "status": "settled",
++        "amount": req.amount,
++        "payee": "Riverside Events Hall",
++        "status_code": 200,
++    }
++
++
++@app.get("/policy")
++def get_policy():
++    return {"policy": POLICY_TEXT}
++
++
++@app.post("/refund")
++def refund(req: RefundRequest):
++    charge = _charges.get(req.settlement_ref)
++    if not charge:
++        raise HTTPException(status_code=404, detail="Settlement ref not found")
++    # Always rejected — no window to check, unlike merchant_b_hotel.py.
++    return {
++        "status": "rejected",
++        "reason": "Non-refundable: venue booking deposits cannot be refunded under any circumstances.",
++        "settlement_ref": req.settlement_ref,
++    }
+diff --git a/mock_merchants/merchant_g_catering.py b/mock_merchants/merchant_g_catering.py
+new file mode 100644
+index 0000000..730d136
+--- /dev/null
++++ b/mock_merchants/merchant_g_catering.py
+@@ -0,0 +1,90 @@
++"""
++mock_merchants/merchant_g_catering.py
++Merchant G — Spice Route Catering.
++Behaviour: cancellations made within 3 days of booking incur a 50%
++cancellation fee; 3 or more days out, fully refundable. Different
++window/percentage pair from both Merchant C (10%/48h) and Merchant D
++(30%/5 days), and part of the "event launch" vendor set alongside
++merchant_f_venue.py (Phase 6.3).
++Server-side validates the refund amount, same pattern as Merchant C/D.
++Port: 8009
++"""
++import uuid
++from datetime import datetime, timezone
++from fastapi import FastAPI, HTTPException
++from pydantic import BaseModel
++
++app = FastAPI(title="Merchant G — Spice Route Catering")
++
++_charges: dict[str, dict] = {}
++
++POLICY_TEXT = (
++    "Cancellations made within 3 days of booking incur a 50% cancellation "
++    "fee on the original charge amount. Cancellations made 3 or more days "
++    "after booking are fully refundable."
++)
++PENALTY_PERCENTAGE = 50.0
++PENALTY_WINDOW_DAYS = 3
++
++
++class ChargeRequest(BaseModel):
++    amount: float
++    item: str = "catering"
++    workflow_id: str = ""
++
++
++class RefundRequest(BaseModel):
++    settlement_ref: str
++    amount: float  # caller must supply the computed refund amount
++
++
++@app.post("/charge")
++def charge(req: ChargeRequest):
++    ref = f"catering_{uuid.uuid4().hex[:8]}"
++    _charges[ref] = {
++        "amount": req.amount,
++        "booked_at": datetime.now(timezone.utc).isoformat(),
++    }
++    return {
++        "settlement_ref": ref,
++        "status": "settled",
++        "amount": req.amount,
++        "payee": "Spice Route Catering",
++        "status_code": 200,
++    }
++
++
++@app.get("/policy")
++def get_policy():
++    return {"policy": POLICY_TEXT}
++
++
++@app.post("/refund")
++def refund(req: RefundRequest):
++    charge = _charges.get(req.settlement_ref)
++    if not charge:
++        raise HTTPException(status_code=404, detail="Settlement ref not found")
++
++    original = charge["amount"]
++    booked_at = datetime.fromisoformat(charge["booked_at"])
++    days_since_booking = (datetime.now(timezone.utc) - booked_at).days
++
++    if days_since_booking < PENALTY_WINDOW_DAYS:
++        expected_refund = round(original * (1 - PENALTY_PERCENTAGE / 100), 2)
++    else:
++        expected_refund = original
++
++    tolerance = 0.01
++    if abs(req.amount - expected_refund) > tolerance:
++        raise HTTPException(
++            status_code=422,
++            detail=(
++                f"Refund amount mismatch. "
++                f"Expected ₹{expected_refund} "
++                f"(original ₹{original}"
++                + (f" - {PENALTY_PERCENTAGE}% penalty" if days_since_booking < PENALTY_WINDOW_DAYS else "")
++                + f"), got ₹{req.amount}. Refund rejected."
++            ),
++        )
++
++    return {"status": "refunded", "amount": req.amount, "settlement_ref": req.settlement_ref}
+diff --git a/mock_merchants/registry.py b/mock_merchants/registry.py
+index a3544c7..3a800dc 100644
+--- a/mock_merchants/registry.py
++++ b/mock_merchants/registry.py
+@@ -65,6 +65,41 @@ MERCHANTS: dict[str, MerchantSpec] = {
+         has_policy=True,
+         refund_needs_amount=True,
+     ),
++    # Phase 6.1 — partial-penalty merchant: 30% within 5 days, otherwise
++    # full refund. Exercises compute_refund()'s arbitrary-percentage math
++    # with a different window/percentage pair than merchant_c's 10%/48h.
++    "merchant_d": MerchantSpec(
++        payee="Flex-Stay Hotels",
++        port=8006,
++        module="mock_merchants.merchant_d_flexstay",
++        has_policy=True,
++        refund_needs_amount=True,
++    ),
++    # Phase 6.2 — flaky merchant: /policy intermittently 500s or times out.
++    # Exercises fetch_policy's fail-safe path in compensating_agent/graph.py
++    # (an errored /policy call now defaults to non-refundable, not a silent
++    # full refund — see that function's docstring/comment).
++    "merchant_e": MerchantSpec(
++        payee="Apex Print & Signage",
++        port=8007,
++        module="mock_merchants.merchant_e_flaky",
++        has_policy=True,
++    ),
++    # Phase 6.3 — second, unrelated vendor set ("event launch" scenario):
++    # proves nothing is hardcoded to the original CRM/Hotel/Domain names.
++    "merchant_f": MerchantSpec(
++        payee="Riverside Events Hall",
++        port=8008,
++        module="mock_merchants.merchant_f_venue",
++        has_policy=True,
++    ),
++    "merchant_g": MerchantSpec(
++        payee="Spice Route Catering",
++        port=8009,
++        module="mock_merchants.merchant_g_catering",
++        has_policy=True,
++        refund_needs_amount=True,
++    ),
+ }
+ 
+ # Convenience derived views — kept so existing call sites that only ever
+diff --git a/start_servers.ps1 b/start_servers.ps1
+index ba4303b..c6ed18e 100644
+--- a/start_servers.ps1
++++ b/start_servers.ps1
+@@ -9,7 +9,11 @@
+ $merchants = @(
+     @{ Module = "mock_merchants.merchant_a_crm"; Port = 8001 },
+     @{ Module = "mock_merchants.merchant_b_hotel"; Port = 8002 },
+-    @{ Module = "mock_merchants.merchant_c_domain"; Port = 8003 }
++    @{ Module = "mock_merchants.merchant_c_domain"; Port = 8003 },
++    @{ Module = "mock_merchants.merchant_d_flexstay"; Port = 8006 },
++    @{ Module = "mock_merchants.merchant_e_flaky"; Port = 8007 },
++    @{ Module = "mock_merchants.merchant_f_venue"; Port = 8008 },
++    @{ Module = "mock_merchants.merchant_g_catering"; Port = 8009 }
+ )
+ 
+ # Pre-flight cleanup. Without this, re-running the script after a previous

@@ -65,6 +65,41 @@ MERCHANTS: dict[str, MerchantSpec] = {
         has_policy=True,
         refund_needs_amount=True,
     ),
+    # Phase 6.1 — partial-penalty merchant: 30% within 5 days, otherwise
+    # full refund. Exercises compute_refund()'s arbitrary-percentage math
+    # with a different window/percentage pair than merchant_c's 10%/48h.
+    "merchant_d": MerchantSpec(
+        payee="Flex-Stay Hotels",
+        port=8006,
+        module="mock_merchants.merchant_d_flexstay",
+        has_policy=True,
+        refund_needs_amount=True,
+    ),
+    # Phase 6.2 — flaky merchant: /policy intermittently 500s or times out.
+    # Exercises fetch_policy's fail-safe path in compensating_agent/graph.py
+    # (an errored /policy call now defaults to non-refundable, not a silent
+    # full refund — see that function's docstring/comment).
+    "merchant_e": MerchantSpec(
+        payee="Apex Print & Signage",
+        port=8007,
+        module="mock_merchants.merchant_e_flaky",
+        has_policy=True,
+    ),
+    # Phase 6.3 — second, unrelated vendor set ("event launch" scenario):
+    # proves nothing is hardcoded to the original CRM/Hotel/Domain names.
+    "merchant_f": MerchantSpec(
+        payee="Riverside Events Hall",
+        port=8008,
+        module="mock_merchants.merchant_f_venue",
+        has_policy=True,
+    ),
+    "merchant_g": MerchantSpec(
+        payee="Spice Route Catering",
+        port=8009,
+        module="mock_merchants.merchant_g_catering",
+        has_policy=True,
+        refund_needs_amount=True,
+    ),
 }
 
 # Convenience derived views — kept so existing call sites that only ever
