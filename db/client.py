@@ -94,6 +94,14 @@ async def run_migrations() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_txn_workflow ON transaction_steps(workflow_id);
         """)
+        # Phase 9.2 — action_type column was added after initial schema creation.
+        # ALTER TABLE ... ADD COLUMN IF NOT EXISTS is idempotent so this runs
+        # safely on every startup against both new and existing databases.
+        # Applies to the parent table; Postgres propagates to all partitions.
+        await conn.execute("""
+            ALTER TABLE transaction_steps
+                ADD COLUMN IF NOT EXISTS action_type VARCHAR(50) DEFAULT 'payment';
+        """)
     finally:
         await conn.close()
 
@@ -360,26 +368,23 @@ async def reset_circuit_breaker(merchant_id: str):
 async def get_session_metrics() -> dict:
     """
     Phase 9.2 — headline recovery metric for the dashboard.
-    Returns the total ₹ auto-recovered and number of workflows where Aegis
-    successfully executed at least one refund — since the last server restart
-    (tracked by the in-memory server_start_time below, not a persistent table,
-    since this is a demo-session counter, not a production audit trail).
-
-    Queries transaction_steps for rows where merchant's /refund returned a
-    'refunded' status AND the step was written by the compensating agent
-    (i.e. action_type = 'refund'). Workflows table row count with any such
-    steps = disputes_resolved.
+    Returns zeros gracefully if the column migration hasn't run yet,
+    so the MetricsBar polling never causes a 500 cascade.
     """
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT
-                COALESCE(SUM((actual->>'amount')::float), 0.0) AS total_recovered,
-                COUNT(DISTINCT workflow_id)                     AS workflows_resolved
-            FROM transaction_steps
-            WHERE action_type = 'refund'
-              AND actual->>'status' = 'refunded'
-        """)
-        return {
-            "total_recovered_inr": float(row["total_recovered"]),
-            "disputes_resolved": int(row["workflows_resolved"]),
-        }
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT
+                    COALESCE(SUM((actual->>'amount')::float), 0.0) AS total_recovered,
+                    COUNT(DISTINCT workflow_id)                     AS workflows_resolved
+                FROM transaction_steps
+                WHERE action_type = 'refund'
+                  AND actual->>'status' = 'refunded'
+            """)
+            return {
+                "total_recovered_inr": float(row["total_recovered"]),
+                "disputes_resolved": int(row["workflows_resolved"]),
+            }
+    except Exception:
+        # Column not yet migrated or pool not ready — return safe zeros.
+        return {"total_recovered_inr": 0.0, "disputes_resolved": 0}
