@@ -349,11 +349,15 @@ def trigger_run(req: TriggerRunRequest):
     came in.
     """
     wid = str(uuid.uuid4())
-    args = [sys.executable, "-m", "primary_agent.procurement_agent", wid]
+    args = [sys.executable, "-X", "utf8", "-m", "primary_agent.procurement_agent", wid]
     if req.goal:
         args += ["--goal", req.goal, "--budget", str(req.budget_limit)]
-    subprocess.Popen(args, cwd=_REPO_ROOT)
-    return {"workflow_id": wid}
+    logs_dir = os.path.join(_REPO_ROOT, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    log_path = os.path.join(logs_dir, f"agent_{wid[:8]}.log")
+    with open(log_path, "w", encoding="utf-8") as lf:
+        subprocess.Popen(args, cwd=_REPO_ROOT, stdout=lf, stderr=lf)
+    return {"workflow_id": wid, "log": f"logs/agent_{wid[:8]}.log"}
 
 
 @app.websocket("/ws/{workflow_id}")

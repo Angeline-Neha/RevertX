@@ -73,6 +73,12 @@ async def run_procurement(workflow_id: str | None = None) -> None:
         print(f"\n[Aegis Demo] Starting workflow {wid}")
         print(f"[Aegis Demo] Goal: Book a CRM license + Hotel for offsite | Budget: ₹35,000\n")
 
+        # Small delay so the dashboard WebSocket has time to subscribe after
+        # /trigger_run returns the wid. workflow_init is the very first event —
+        # if it fires before the browser connects, the budget bar stays at 0/0
+        # and the graph looks permanently empty even though the run succeeds.
+        await asyncio.sleep(1.5)
+
         await client.post(f"{PROXY_URL}/init_workflow", headers=HEADERS, json={
             "workflow_id": wid,
             "budget_limit": 35000.0,
@@ -218,6 +224,11 @@ async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id:
     print()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
+        # Same 1.5s startup gap as run_procurement — gives the dashboard WS
+        # time to subscribe before workflow_init fires. The planner call above
+        # usually takes longer than this, but if the model returns instantly
+        # (e.g. a cached response) the race can still happen.
+        await asyncio.sleep(1.5)
         await client.post(f"{PROXY_URL}/init_workflow", headers=HEADERS, json={
             "workflow_id": wid,
             "budget_limit": budget_limit,
