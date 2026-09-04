@@ -5,6 +5,7 @@ import WorkflowGraph from "./components/WorkflowGraph.jsx";
 import ReasoningStream from "./components/ReasoningStream.jsx";
 import MetricsBar from "./components/MetricsBar.jsx";
 import EndStatePanel from "./components/EndStatePanel.jsx";
+import TriggerPanel from "./components/TriggerPanel.jsx";
 
 // Batch eval metrics — from last run of test_harness/run_batch_eval.py.
 // These numbers must match results.json committed to the repo exactly —
@@ -265,9 +266,13 @@ export default function App() {
 
   if (!workflowId) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen gap-4">
+      <div className="flex flex-col items-center justify-center min-h-screen gap-4 py-8">
         <div className="text-3xl">🛡️ Aegis</div>
-        <p className="text-[var(--text-muted)]">Enter a workflow ID to watch live events</p>
+
+        <TriggerPanel onLaunched={(wid) => connect(wid)} />
+
+        <div className="text-xs text-[var(--text-muted)]">— or connect to an existing run —</div>
+
         <div className="flex gap-2">
           <input
             className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-3 py-2 text-sm w-80 focus:outline-none focus:border-[var(--blue)]"
@@ -283,12 +288,9 @@ export default function App() {
             Connect
           </button>
         </div>
-        <p className="text-xs text-[var(--text-muted)]">
-          Run <code className="bg-[var(--bg-secondary)] px-1 py-0.5 rounded">python primary_agent/procurement_agent.py</code> to start a demo workflow
-        </p>
 
         {recentWorkflows.length > 0 && (
-          <div className="w-[420px] mt-4 bg-[var(--bg-secondary)] border border-[var(--border)] rounded overflow-hidden">
+          <div className="w-[420px] bg-[var(--bg-secondary)] border border-[var(--border)] rounded overflow-hidden">
             <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border)] flex items-center justify-between">
               Recent workflows
               <button
@@ -318,9 +320,15 @@ export default function App() {
     );
   }
 
+  function disconnect() {
+    wsRef.current?.close();
+    setWorkflowId(null);
+    window.location.hash = "";
+  }
+
   return (
     <div className="flex flex-col h-screen overflow-hidden">
-      <TopBar workflowId={workflowId} budget={budget} connected={connected} />
+      <TopBar workflowId={workflowId} budget={budget} connected={connected} onNewRun={disconnect} />
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left — Agent Terminal */}

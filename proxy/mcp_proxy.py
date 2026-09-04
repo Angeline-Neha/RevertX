@@ -7,8 +7,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
+import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 from contextlib import asynccontextmanager
 
 import httpx
@@ -266,6 +269,49 @@ async def list_workflows(limit: int = 20):
     limit = max(1, min(limit, 100))
     workflows = await db.list_recent_workflows(limit=limit)
     return {"workflows": workflows}
+
+
+# Repo root — same resolution primary_agent/procurement_agent.py uses for
+# its own sys.path fix, needed here so the subprocess below (launched with
+# cwd=_REPO_ROOT) can resolve `-m primary_agent.procurement_agent` and
+# `import db` regardless of what directory uvicorn itself was started from.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class TriggerRunRequest(BaseModel):
+    # None → the fixed 3-step demo script (run_procurement, unchanged from
+    # before Phase 7). Set → primary_agent/planner.py's goal-driven path
+    # (run_procurement_with_plan).
+    goal: Optional[str] = None
+    budget_limit: float = 35000.0
+
+
+@app.post("/trigger_run", dependencies=[Depends(verify_api_key)])
+def trigger_run(req: TriggerRunRequest):
+    """
+    Phase 8.1 — launches a fresh procurement run without the demo operator
+    touching a terminal. Generates the workflow_id here (rather than
+    letting procurement_agent.py generate its own) specifically so it can
+    be handed back to the caller immediately, before the run has actually
+    finished — the dashboard uses this to auto-connect via Phase 5.2's
+    existing connect-by-id flow while the run is still in progress, which
+    is what makes the live event stream visible from the very first
+    payment instead of only after the whole script completes.
+
+    Runs procurement_agent.py as a genuinely separate OS process (the same
+    way run_demo.py and start_and_test.py already launch it), not as an
+    in-process function call — that script does process-global things at
+    import time (reconfiguring sys.stdout's encoding, mutating sys.path)
+    that are fine for a standalone script but not something this proxy
+    process's own stdout/path should inherit just because an HTTP request
+    came in.
+    """
+    wid = str(uuid.uuid4())
+    args = [sys.executable, "-m", "primary_agent.procurement_agent", wid]
+    if req.goal:
+        args += ["--goal", req.goal, "--budget", str(req.budget_limit)]
+    subprocess.Popen(args, cwd=_REPO_ROOT)
+    return {"workflow_id": wid}
 
 
 @app.websocket("/ws/{workflow_id}")

@@ -1,4 +1,4 @@
-export default function TopBar({ workflowId, budget, connected }) {
+export default function TopBar({ workflowId, budget, connected, onNewRun }) {
   const pct = budget.limit > 0 ? (budget.used / budget.limit) * 100 : 0;
   const barColor = pct > 90 ? "#f85149" : pct > 70 ? "#d29922" : "#3fb950";
 
@@ -35,6 +35,15 @@ export default function TopBar({ workflowId, budget, connected }) {
           <div className={`w-2 h-2 rounded-full ${connected ? "bg-[var(--green)]" : "bg-[var(--red)]"}`} />
           <span className="text-xs text-[var(--text-muted)]">{connected ? "Live" : "Disconnected"}</span>
         </div>
+
+        {onNewRun && (
+          <button
+            className="text-xs border border-[var(--border)] rounded px-3 py-1.5 hover:border-[var(--blue)] hover:text-[var(--blue)]"
+            onClick={onNewRun}
+          >
+            New run
+          </button>
+        )}
       </div>
     </div>
   );
