@@ -1,4 +1,7 @@
-import { useState } from "react";
+﻿content = open("dashboard/src/components/TriggerPanel.jsx.bak", "w")
+content.close()
+
+jsx = r"""import { useState } from "react";
 
 const PRESETS = [
   { label: "Happy path", goal: "Book a CRM license and hotel for our offsite", budget: 25000 },
@@ -83,3 +86,7 @@ export default function TriggerPanel({ onLaunched }) {
     </div>
   );
 }
+"""
+with open("dashboard/src/components/TriggerPanel.jsx", "w", encoding="utf-8", newline="\n") as f:
+    f.write(jsx)
+print("OK")
