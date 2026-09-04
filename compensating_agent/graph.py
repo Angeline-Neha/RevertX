@@ -33,6 +33,7 @@ from typing_extensions import TypedDict
 
 from proxy.schemas import FaultClassification, LiabilityReport, UDIRPayload
 from engine.fault_classifier import classify_fault
+from engine.policy_sanitizer import sanitize_policy_text
 from refund_math import compute_refund
 from state_log.redis_client import (
     get_workflow_steps,
@@ -207,8 +208,38 @@ async def fetch_policy(state: CompensationState) -> dict:
             resp = await client.get(f"{base_url}/policy")
             resp.raise_for_status()
             policy_data = resp.json()
-        policy_text = policy_data.get("policy", "")
-        _trace(wid, "fetch_policy", "end", {"policy_text": policy_text})
+        raw_policy_text = policy_data.get("policy", "")
+
+        # Phase 10.1 — a merchant's /policy response is untrusted external
+        # input, exactly like any other text a caller controls that ends up
+        # inside an LLM prompt (extract_policy_terms_node, downstream). Bound
+        # and scrub it here, before it's stored on state at all, so nothing
+        # after this point — the trace log, the dashboard, the extractor
+        # prompt — ever sees the raw unbounded/unscrubbed text.
+        sanitized = sanitize_policy_text(raw_policy_text)
+        policy_text = sanitized.text
+        if not sanitized.is_clean:
+            # Visible in the same trace stream the dashboard already reads
+            # (see WorkflowGraph.jsx's error-tooltip handling of comp-node
+            # events) rather than only in a backend log — a flagged policy
+            # is exactly the kind of thing worth surfacing live, the same
+            # way is_fail_safe already is.
+            logger.warning(
+                "fetch_policy.sanitization_flagged",
+                merchant_id=merchant_id,
+                truncated=sanitized.truncated,
+                injection_flags=sanitized.injection_flags,
+            )
+        _trace(
+            wid,
+            "fetch_policy",
+            "end",
+            {
+                "policy_text": policy_text,
+                "sanitization_truncated": sanitized.truncated,
+                "sanitization_injection_flags": sanitized.injection_flags,
+            },
+        )
         return {"policy_text": policy_text}
     except Exception as exc:
         # A merchant that HAS a /policy endpoint but the call itself failed
