@@ -85,6 +85,7 @@ async def main() -> None:
                 auto_delete=False,
                 durable=True,
                 arguments={
+                    "x-queue-type": "quorum",        # x-delivery-limit only exists on quorum queues
                     "x-delivery-limit": 5,          # aio-pika / RabbitMQ Streams DLQ cap
                     "x-dead-letter-exchange": "",    # default exchange
                     "x-dead-letter-routing-key": "compensation_requests_dlq",

@@ -1,11 +1,25 @@
 import { useState } from "react";
 
 const PRESETS = [
-  { label: "Happy path", goal: "Book a CRM license and hotel for our offsite", budget: 25000 },
-  { label: "Flexible hotel", goal: "Book flights and 2 hotel nights for a conference using a flexible-cancellation hotel", budget: 20000 },
-  { label: "Strict non-refundable", goal: "Book a certification exam voucher and domain hosting", budget: 10000 },
+  // True happy path — budget comfortably covers both items (₹30k) so nothing
+  // fails. Useful as the clean "before" baseline to contrast against the
+  // failure-driven presets below.
+  { label: "Happy path", goal: "Book a CRM license and hotel for our offsite", budget: 32000 },
+  // Flexible hotel (₹20k) + catering (₹15k) = ₹35k vs ₹22k budget: hotel
+  // succeeds, catering is rejected, compensation refunds the flexible hotel
+  // under merchant_d's date-threshold policy — a partial/conditional refund
+  // case, distinct from B's hard non-refundable and F's always-non-refundable.
+  { label: "Flexible hotel", goal: "Book a flexible-cancellation hotel and catering for a conference", budget: 22000 },
+  // Domain (₹12k, 10% cancellation penalty) + CRM (₹10k) = ₹22k vs ₹15k
+  // budget: domain succeeds first, CRM is rejected, compensation refunds the
+  // domain registration and must apply the exact 10% penalty math.
+  { label: "Partial penalty", goal: "Register a domain with hosting, then get a CRM license for the team", budget: 15000 },
   { label: "Event launch", goal: "Book venue and catering for a product launch event", budget: 30000 },
-  { label: "Flaky vendor", goal: "Book signage printing for our product launch banner", budget: 8000 },
+  // Signage (₹8k) + domain hosting (₹12k) = ₹20k vs ₹12k budget: signage
+  // succeeds first, domain is rejected, compensation must fetch_policy on
+  // the flaky print vendor — the one preset that actually exercises the
+  // intermittent /policy failure it's named for.
+  { label: "Flaky vendor", goal: "Book signage printing for our product launch banner, then register the event's domain and hosting", budget: 12000 },
 ];
 
 export default function TriggerPanel({ onLaunched }) {
