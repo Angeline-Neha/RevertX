@@ -40,6 +40,7 @@ from state_log.redis_client import (
 )
 import db.client as db
 from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
+from authorization.trace import authorize
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
@@ -157,6 +158,27 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
     currency: str = expected_data.get("currency", "INR")
 
     expected = ExpectedPayment(amount=amount, currency=currency, payee=payee, item=item)
+
+    # 1c. Agent Wallet + policy authorization — runs BEFORE the workflow
+    # budget check below. Distinct concern: reserve_budget() enforces this
+    # *workflow's* goal-scoped mandate; authorize() enforces the agent's
+    # own standing financial authority (daily/per-txn limits, recipient/
+    # category policy) independent of any single workflow. Single-agent
+    # system today, so agent_id/category are fixed defaults — parameterize
+    # PayRequest if/when multiple agents exist.
+    auth_result = await authorize(
+        workflow_id=wid, agent_id="primary_agent", amount=amount,
+        category=expected_data.get("category", "vendor_payment"),
+        recipient_id=payee,
+    )
+    if auth_result["decision"] == "BLOCK":
+        await async_redis.aclose()
+        return JSONResponse(status_code=403, content={
+            "status_code": 403,
+            "error_type": "authorization_blocked",
+            "trace_id": auth_result["trace_id"],
+            "detail": auth_result["steps"][-1]["detail"],
+        })
 
     # 2. Atomic Budget Reservation (replaces check-then-act dict)
     reserved, current_used, current_limit = await db.reserve_budget(wid, amount)

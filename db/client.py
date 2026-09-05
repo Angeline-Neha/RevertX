@@ -102,6 +102,19 @@ async def run_migrations() -> None:
             ALTER TABLE transaction_steps
                 ADD COLUMN IF NOT EXISTS action_type VARCHAR(50) DEFAULT 'payment';
         """)
+        # Agent Wallet — the AI agent's own financial authority, distinct
+        # from the RazorpayX account balance. per_txn_limit/daily_limit are
+        # policy inputs (set once, changed deliberately); spent_today/
+        # last_reset are runtime state reset once per calendar day.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_wallet (
+                agent_id VARCHAR(255) PRIMARY KEY,
+                per_txn_limit FLOAT NOT NULL,
+                daily_limit FLOAT NOT NULL,
+                spent_today FLOAT NOT NULL DEFAULT 0.0,
+                last_reset DATE NOT NULL DEFAULT CURRENT_DATE
+            );
+        """)
     finally:
         await conn.close()
 
@@ -363,6 +376,32 @@ async def check_circuit_breaker(merchant_id: str) -> str:
 async def reset_circuit_breaker(merchant_id: str):
     async with pool.acquire() as conn:
         await conn.execute("UPDATE circuit_breakers SET failures = 0, state = 'closed' WHERE merchant_id = $1", merchant_id)
+
+
+async def fetch_wallet(agent_id: str, default_per_txn: float = 5000.0, default_daily: float = 20000.0) -> dict:
+    """Creates a wallet row with defaults on first use so callers never
+    have to provision it separately before checking authority."""
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO agent_wallet (agent_id, per_txn_limit, daily_limit)
+            VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
+        """, agent_id, default_per_txn, default_daily)
+        row = await conn.fetchrow("SELECT * FROM agent_wallet WHERE agent_id = $1", agent_id)
+        return dict(row)
+
+async def reset_wallet_spend(agent_id: str, reset_date) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE agent_wallet SET spent_today = 0.0, last_reset = $1 WHERE agent_id = $2",
+            reset_date, agent_id
+        )
+
+async def increment_wallet_spend(agent_id: str, amount: float) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE agent_wallet SET spent_today = spent_today + $1 WHERE agent_id = $2",
+            amount, agent_id
+        )
 
 
 async def get_session_metrics() -> dict:
