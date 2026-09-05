@@ -29,6 +29,24 @@ Write-Host "Cleaning up any previous background jobs..."
 Get-Job | Stop-Job -ErrorAction SilentlyContinue
 Get-Job | Remove-Job -ErrorAction SilentlyContinue
 
+# Workers do not listen on a TCP port, so killing listeners below does not
+# remove an orphaned compensation worker from an earlier PowerShell window.
+# If two workers consume the same RabbitMQ queue, an old process can receive
+# the message and still emit the pre-fix "connection is closed" error even
+# though this launcher started the corrected worker. Kill Python processes
+# whose command line belongs to this checkout before starting replacements.
+Write-Host "Checking for orphaned RevertX Python workers..."
+$repoPython = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -match '^python(\.exe)?$' -and
+        $_.CommandLine -and
+        $_.CommandLine -like "*$root*"
+    }
+foreach ($proc in $repoPython) {
+    Write-Host "  Stopping orphaned Python PID $($proc.ProcessId) — $($proc.CommandLine)"
+    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "Checking for stale processes still holding required ports..."
 # Release the dashboard dev port too. The dashboard is started separately with npm,
 # but a stale Vite process here causes the silent 5173 -> 5174 fallback.
