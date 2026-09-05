@@ -242,6 +242,7 @@ async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id:
 
         total_paid = 0.0
         mandate_exceeded_hit = False
+        all_reconciled = True
         for p in plan:
             payee = CATALOG_BY_ID[p.merchant_id].payee
             result = await _pay(client, wid, p.merchant_id, p.amount, payee, p.item)
@@ -250,14 +251,39 @@ async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id:
                 print("[Aegis]         Compensating agent triggered automatically. Watch the dashboard.\n")
                 mandate_exceeded_hit = True
                 break
+            # HTTP 200 only means the gateway call itself didn't error — it
+            # does NOT mean the payment settled. A merchant_rzp payout that
+            # polled to "pending" (non-terminal) or a mock merchant mismatch
+            # both return 200 with reconciliation.match=false. Previously
+            # this loop only checked status_code, so a still-processing
+            # real payout was counted as paid and the workflow was reported
+            # "completed cleanly" — exactly the "HTTP success != money
+            # moved" gap this whole system exists to catch, except it was
+            # happening here in the demo driver, upstream of Aegis ever
+            # getting a chance to see it.
+            recon = result.get("data", {}).get("reconciliation", {})
+            if not recon.get("match", True):
+                all_reconciled = False
             total_paid += p.amount
 
-        if not mandate_exceeded_hit:
+        if not mandate_exceeded_hit and all_reconciled:
             publish_event(wid, "workflow_complete", {
                 "outcome": "success",
                 "total_paid": total_paid,
                 "merchant_count": len(plan),
             })
+        elif not mandate_exceeded_hit:
+            # At least one payment's reconciliation didn't match (e.g. a
+            # real payout still non-terminal after polling). Don't claim
+            # clean success — the payout_unconfirmed/mismatch events
+            # already published from mcp_proxy.py are the honest signal
+            # here. Full auto-resolution (quietly clear vs. hand off to
+            # compensation once the payout's real outcome is known) is
+            # Phase 5 — for now, just don't paper over it with a false
+            # "completed cleanly" banner.
+            print("\n[Primary Agent] One or more payments did not reconcile cleanly — "
+                  "NOT reporting workflow_complete. See payout_unconfirmed / "
+                  "reconciliation_result events on the dashboard for the real state.\n")
 
         print(f"\n[Aegis Demo] Workflow ID: {wid}")
         print(f"[Aegis Demo] Connect the dashboard to ws://localhost:8000/ws/{wid} to see live events.")

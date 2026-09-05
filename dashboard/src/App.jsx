@@ -349,6 +349,24 @@ export default function App() {
         });
         break;
 
+      // Phase 4 (Preset 3 flagship) — payout was CONFIRMED processed, but
+      // the thing it paid for wasn't. Distinct from payout_unconfirmed
+      // (which is genuinely ambiguous) — this is a known failure.
+      case "downstream_fulfillment_failed":
+        log(`✗ DOWNSTREAM FULFILLMENT FAILED — ${data.merchant_id} ₹${data.amount.toLocaleString("en-IN")}: ${data.reason}`);
+        setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "failed" }));
+        break;
+
+      // Phase 2 — payout polled to timeout still queued/processing.
+      // Genuinely unknown, not a known failure, so this does NOT reuse
+      // mandate_exceeded's shape or trigger compensation. Full routing to
+      // the human_escalation_required banner + later resolution check is
+      // Phase 5 — for now this just logs so the event isn't silently lost.
+      case "payout_unconfirmed":
+        log(`⏳ PAYOUT UNCONFIRMED — ${data.merchant_id} ₹${data.amount.toLocaleString("en-IN")} still '${data.razorpay_status}' after ${data.poll_attempts} poll(s)`);
+        setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "in_progress" }));
+        break;
+
       // Agent Wallet / policy authorization ran BEFORE any payment attempt
       // (mcp_proxy.py, before reserve_budget). Distinct from
       // mandate_exceeded: no merchant/payment_attempt event ever fires

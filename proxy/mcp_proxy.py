@@ -43,9 +43,11 @@ from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
 from authorization.trace import authorize
 from authorization.wallet import get_wallet
 from authorization.policy import DEFAULT_POLICY_CONFIG
-from razorpayx.client import create_payout
+from razorpayx.client import create_payout, poll_payout, reverse_payout
+from mock_merchants.downstream_service import confirm_fulfillment
 
 RZP_DEMO_FUND_ACCOUNT_ID = os.getenv("RZP_DEMO_FUND_ACCOUNT_ID")
+RZP_SELF_FUND_ACCOUNT_ID = os.getenv("RZP_SELF_FUND_ACCOUNT_ID")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
@@ -248,19 +250,118 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
                 reference_id=idem_key,
                 narration=item[:30] if item else "Aegis payout",
             )
-            # queued/processing are real, accepted payouts in test mode —
-            # see razorpayx/provision.py's note. Only reversed/rejected/
-            # cancelled count as failed.
-            rzp_status = payout.get("status", "")
+            payout_id = payout.get("id", "")
+            # Phase 2 — don't trust create_payout()'s own initial response;
+            # queued/processing are non-terminal (queued specifically means
+            # "not processed, nothing sent yet"), not evidence of a
+            # completed payout. Re-poll until processed/reversed/rejected/
+            # cancelled/failed, or until the poll window (RZP_POLL_* env
+            # vars, default 2s x 3 = 6s) is exhausted.
+            poll_result = await poll_payout(payout_id) if payout_id else None
+            rzp_status = poll_result.razorpay_status if poll_result else payout.get("status", "")
+
+            if poll_result and poll_result.classification == "processed":
+                merchant_status = "settled"
+            elif poll_result and poll_result.classification == "failed":
+                merchant_status = "failed"
+            elif poll_result and poll_result.classification == "non_terminal":
+                # Genuinely unknown, not a failure — do NOT mark settled or
+                # failed. See Preset 2's design: this should route to
+                # human_escalation_required (held for later resolution),
+                # not the compensation saga, which assumes a known failure.
+                # That routing is Phase 5 — for now this is surfaced as its
+                # own status so nothing downstream silently treats it as
+                # either a success or a known failure.
+                merchant_status = "pending"
+            else:
+                # payout_id missing from RazorpayX's own create response —
+                # can't poll at all, treat as failed rather than guess.
+                merchant_status = "failed"
+
             merchant_data = {
-                "status": "settled" if rzp_status in ("queued", "processing", "processed") else "failed",
+                "status": merchant_status,
                 "amount": payout.get("amount", 0) / 100.0,
                 "payee": payee,
-                "settlement_ref": payout.get("id", ""),
+                "settlement_ref": payout_id,
                 "razorpay_status": rzp_status,
                 "utr": payout.get("utr"),
+                "poll_attempts": poll_result.attempts_made if poll_result else 0,
             }
             status_code = 200
+
+            if merchant_status == "pending":
+                publish_event(wid, "payout_unconfirmed", {
+                    "merchant_id": merchant_id, "payee": payee, "amount": amount,
+                    "settlement_ref": payout_id, "razorpay_status": rzp_status,
+                    "poll_attempts": poll_result.attempts_made,
+                    "reason": (
+                        f"Payout {payout_id} still '{rzp_status}' after "
+                        f"{poll_result.attempts_made} poll(s) — financial "
+                        "outcome unconfirmed, holding before any recovery action."
+                    ),
+                })
+            elif merchant_status == "settled":
+                # Phase 4 (Preset 3 flagship) — the payout is CONFIRMED
+                # processed (not uncertain), so this is a known failure if
+                # the downstream fulfillment/booking never happens, not an
+                # ambiguous one. Auto-reversal is safe here specifically
+                # because there's no double-spend risk: we know for
+                # certain the money moved and for certain the thing it
+                # paid for didn't.
+                fulfillment = await confirm_fulfillment(merchant_id, payout_id, amount)
+                if not fulfillment["confirmed"]:
+                    publish_event(wid, "downstream_fulfillment_failed", {
+                        "merchant_id": merchant_id, "payee": payee, "amount": amount,
+                        "settlement_ref": payout_id, "utr": payout.get("utr"),
+                        "reason": fulfillment["reason"],
+                    })
+                    if _aegis_enabled:
+                        if not RZP_SELF_FUND_ACCOUNT_ID:
+                            publish_event(wid, "compensation_error", {
+                                "workflow_id": wid,
+                                "error": (
+                                    "RZP_SELF_FUND_ACCOUNT_ID not set — cannot fire a real "
+                                    "reversal payout. Run `python -m razorpayx.provision --self` "
+                                    "and add it to .env."
+                                ),
+                            })
+                        else:
+                            try:
+                                reversal = await reverse_payout(
+                                    original_payout_id=payout_id,
+                                    self_fund_account_id=RZP_SELF_FUND_ACCOUNT_ID,
+                                    amount_paise=int(amount * 100),
+                                )
+                                publish_event(wid, "final_output", {
+                                    "type": "real_payout_reversed",
+                                    "label": "Downstream failure — real reversal payout sent",
+                                    "payload": {
+                                        "merchant_id": merchant_id, "payee": payee, "amount": amount,
+                                        "original_settlement_ref": payout_id,
+                                        "original_utr": payout.get("utr"),
+                                        "downstream_failure_reason": fulfillment["reason"],
+                                        "reversal_settlement_ref": reversal.get("id", ""),
+                                        "reversal_utr": reversal.get("utr"),
+                                        "reversal_status": reversal.get("status", ""),
+                                    },
+                                })
+                            except Exception as exc:
+                                publish_event(wid, "compensation_error", {
+                                    "workflow_id": wid, "error": f"Reversal payout failed: {exc}",
+                                })
+                    else:
+                        # Phase 9.1's existing OFF-state signal, reused —
+                        # same "money stranded, nothing recovers it"
+                        # visual as the mandate_exceeded path, now also
+                        # covering a real-money downstream failure.
+                        publish_event(wid, "aegis_disabled_no_compensation", {
+                            "workflow_id": wid,
+                            "message": (
+                                f"Aegis is OFF — real payout {payout_id} (₹{amount:,.2f}) "
+                                "succeeded but its downstream fulfillment failed. "
+                                "No reversal triggered. Money is stranded."
+                            ),
+                        })
         except Exception as exc:
             merchant_data = {"error": str(exc)}
             status_code = 502

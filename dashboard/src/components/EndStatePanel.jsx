@@ -6,6 +6,12 @@ export default function EndStatePanel({ data, onClose }) {
   if (!data) return null;
   const isUdir = data.type === "udir_payload";
   const isAuthBlocked = data.type === "authorization_blocked";
+  // Phase 4 (Preset 3 flagship) — a real payout was confirmed processed,
+  // downstream fulfillment failed, and Aegis fired a real second payout
+  // back to a self-owned fund account. Distinct from the liability-report
+  // bucket below: money actually moved twice here, real settlement refs
+  // both ways, not "no dispute filed."
+  const isReversal = data.type === "real_payout_reversed";
 
   // Three distinct pre-payment blocks share this one banner type — Wallet
   // (agent's own configured authority), Policy (rule compliance), and
@@ -35,14 +41,14 @@ export default function EndStatePanel({ data, onClose }) {
         {/* Header */}
         <div
           className="px-4 py-3 flex items-start justify-between border-b"
-          style={{ borderColor: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950" }}
+          style={{ borderColor: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : isReversal ? "#a371f7" : "#3fb950" }}
         >
           <div>
             <div
               className="text-xs font-bold uppercase tracking-wider mb-1"
-              style={{ color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950" }}
+              style={{ color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : isReversal ? "#a371f7" : "#3fb950" }}
             >
-              {isAuthBlocked ? "Authorization Blocked" : isUdir ? "Network-Fault Detected" : "Agent-Fault Detected"}
+              {isAuthBlocked ? "Authorization Blocked" : isUdir ? "Network-Fault Detected" : isReversal ? "Real Payout Reversed" : "Agent-Fault Detected"}
             </div>
             <div className="text-sm font-semibold text-white">{data.label}</div>
           </div>
@@ -59,15 +65,17 @@ export default function EndStatePanel({ data, onClose }) {
           <span
             className="text-xs px-2 py-1 rounded font-semibold"
             style={{
-              background: isAuthBlocked ? "rgba(210,153,34,0.15)" : isUdir ? "rgba(88,166,255,0.15)" : "rgba(63,185,80,0.15)",
-              color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950",
-              border: `1px solid ${isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950"}`,
+              background: isAuthBlocked ? "rgba(210,153,34,0.15)" : isUdir ? "rgba(88,166,255,0.15)" : isReversal ? "rgba(163,113,247,0.15)" : "rgba(63,185,80,0.15)",
+              color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : isReversal ? "#a371f7" : "#3fb950",
+              border: `1px solid ${isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : isReversal ? "#a371f7" : "#3fb950"}`,
             }}
           >
             {isAuthBlocked
               ? authBlockLabel
               : isUdir
               ? "UDIR Payload — ready for NPCI"
+              : isReversal
+              ? "Confirmed downstream failure — real reversal issued"
               : "Internal Liability Report — no dispute filed"}
           </span>
         </div>
@@ -106,7 +114,7 @@ export default function EndStatePanel({ data, onClose }) {
             ⛔ No payout attempted — nothing was paid, so there is nothing for Aegis to compensate.
           </div>
         )}
-        {!isAuthBlocked && !isUdir && (
+        {!isAuthBlocked && !isUdir && !isReversal && (
           <div
             className="mx-4 mb-4 rounded px-3 py-2 text-xs"
             style={{ background: "rgba(63,185,80,0.1)", border: "1px solid #3fb950", color: "#3fb950" }}
@@ -120,6 +128,14 @@ export default function EndStatePanel({ data, onClose }) {
             style={{ background: "rgba(88,166,255,0.1)", border: "1px solid #58a6ff", color: "#58a6ff" }}
           >
             ↗ UDIR-shaped payload ready — network/infrastructure failure confirmed by raw gateway code.
+          </div>
+        )}
+        {isReversal && (
+          <div
+            className="mx-4 mb-4 rounded px-3 py-2 text-xs"
+            style={{ background: "rgba(163,113,247,0.1)", border: "1px solid #a371f7", color: "#a371f7" }}
+          >
+            ↩ Original payout confirmed processed — downstream fulfillment failed, so Aegis fired a real second payout back to a self-owned account. Both settlement refs above are real RazorpayX transactions.
           </div>
         )}
       </motion.div>

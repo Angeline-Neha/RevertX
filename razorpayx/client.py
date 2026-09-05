@@ -6,7 +6,10 @@ Docs: https://razorpay.com/docs/x/
 """
 from __future__ import annotations
 
+import asyncio
 import os
+from dataclasses import dataclass, field
+
 import httpx
 from dotenv import load_dotenv
 
@@ -16,6 +19,22 @@ RZP_KEY_ID = os.getenv("RZP_KEY_ID")
 RZP_KEY_SECRET = os.getenv("RZP_KEY_SECRET")
 RZP_ACCOUNT_NUMBER = os.getenv("RZP_ACCOUNT_NUMBER")  # RazorpayX virtual account no.
 BASE_URL = "https://api.razorpay.com/v1"
+
+# Phase 2 — poll cadence for post-payout status classification. Configurable
+# via env (not hardcoded) so the demo-day window (default 2s x 3 = 6s) can be
+# tuned without a code change. See poll_payout() below.
+RZP_POLL_INTERVAL_SECONDS = float(os.getenv("RZP_POLL_INTERVAL_SECONDS", "2"))
+RZP_POLL_MAX_ATTEMPTS = int(os.getenv("RZP_POLL_MAX_ATTEMPTS", "3"))
+
+# RazorpayX payout status buckets (per Razorpay docs, confirmed in the
+# Preset-design discussion): "queued" specifically means insufficient
+# balance / not yet processed — nothing has been sent. "processing" means
+# in flight, outcome unknown. "processed" is the only real success.
+# "reversed"/"rejected"/"cancelled"/"failed" all mean the money didn't move
+# (or moved and was reversed automatically by Razorpay on failure).
+_TERMINAL_SUCCESS = {"processed"}
+_TERMINAL_FAILURE = {"reversed", "rejected", "cancelled", "failed"}
+_NON_TERMINAL = {"queued", "processing"}
 
 if not RZP_KEY_ID or not RZP_KEY_SECRET:
     raise RuntimeError(
@@ -135,3 +154,97 @@ async def get_payout(payout_id: str) -> dict:
         resp = await client.get(f"{BASE_URL}/payouts/{payout_id}")
         resp.raise_for_status()
         return resp.json()
+
+
+async def reverse_payout(
+    original_payout_id: str,
+    self_fund_account_id: str,
+    amount_paise: int,
+    narration: str | None = None,
+) -> dict:
+    """Phase 4 (Preset 3 flagship) — RazorpayX Payouts have no undo/refund
+    endpoint; per Razorpay's docs, a "reversal" only happens automatically
+    when a payout FAILS, crediting the amount back on its own. There is no
+    API to trigger that for a payout that already succeeded. So "sort it
+    out" for a confirmed-processed payout whose downstream fulfillment
+    failed has to mean firing a second, real payout of the same amount
+    back to a fund account you control — a genuine, auditable reversal,
+    not a database rollback pretending money moved back by itself.
+
+    self_fund_account_id must point at a fund account belonging to the
+    SAME RazorpayX account (see razorpayx/provision.py's provision_self())
+    — not the original recipient's fund account.
+    """
+    reference_id = f"reversal-{original_payout_id}"[:40]
+    return await create_payout(
+        fund_account_id=self_fund_account_id,
+        amount_paise=amount_paise,
+        purpose="refund",
+        reference_id=reference_id,
+        narration=(narration or f"Aegis reversal of {original_payout_id}")[:30],
+    )
+
+
+@dataclass
+class PayoutPollResult:
+    """Phase 2 — replaces the old blanket 'queued/processing/processed all
+    count as settled' read of a payout's status with a real classification,
+    reached by re-fetching the payout up to RZP_POLL_MAX_ATTEMPTS times
+    (RZP_POLL_INTERVAL_SECONDS apart) instead of trusting create_payout()'s
+    single initial response.
+
+    classification is one of:
+      "processed"    — terminal success, money moved.
+      "failed"       — terminal failure (reversed/rejected/cancelled/failed).
+      "non_terminal" — still queued/processing after every poll attempt;
+                        outcome genuinely unknown at this point. Callers
+                        must NOT treat this as either success or failure —
+                        see authorization/trace.py's real_balance check and
+                        the Preset 2 (uncertain/reconciliation) design for
+                        how this is meant to be routed (human_escalation_
+                        required, not the compensation saga, until a later
+                        resolution check settles it).
+    """
+    payout: dict
+    classification: str  # "processed" | "failed" | "non_terminal"
+    attempts_made: int
+    razorpay_status: str
+
+
+async def poll_payout(
+    payout_id: str,
+    max_attempts: int | None = None,
+    interval_seconds: float | None = None,
+) -> PayoutPollResult:
+    """Checks a payout immediately, then re-polls via get_payout() every
+    interval_seconds, up to max_attempts additional times, until it reaches
+    a terminal status (processed / reversed / rejected / cancelled /
+    failed) or the attempts are exhausted — whichever comes first.
+
+    Worst-case wait is max_attempts * interval_seconds (default 3 x 2s =
+    6s), matching the "poll every 2s, 3 attempts max" demo-day window from
+    the Preset 2/3 design. Defaults come from RZP_POLL_INTERVAL_SECONDS /
+    RZP_POLL_MAX_ATTEMPTS so that window is one env change, not a code
+    change.
+    """
+    attempts = max_attempts if max_attempts is not None else RZP_POLL_MAX_ATTEMPTS
+    interval = interval_seconds if interval_seconds is not None else RZP_POLL_INTERVAL_SECONDS
+
+    payout = await get_payout(payout_id)
+    status = payout.get("status", "")
+    polls_done = 0
+
+    while status in _NON_TERMINAL and polls_done < attempts:
+        await asyncio.sleep(interval)
+        payout = await get_payout(payout_id)
+        status = payout.get("status", "")
+        polls_done += 1
+
+    if status in _TERMINAL_SUCCESS:
+        return PayoutPollResult(payout, "processed", polls_done, status)
+    if status in _TERMINAL_FAILURE:
+        return PayoutPollResult(payout, "failed", polls_done, status)
+    # Still queued/processing (or an unrecognized status) after every
+    # attempt — genuinely unknown, not a failure. Callers must not treat
+    # this as settled.
+    return PayoutPollResult(payout, "non_terminal", polls_done, status)

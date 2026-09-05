@@ -1,0 +1,351 @@
+diff --git a/.env.example b/.env.example
+index c6c11e5..b866e89 100644
+--- a/.env.example
++++ b/.env.example
+@@ -44,6 +44,19 @@ PROXY_API_KEY=test-key-123
+ RZP_POLL_INTERVAL_SECONDS=2
+ RZP_POLL_MAX_ATTEMPTS=3
+ 
++# --- RazorpayX reversal payout (Phase 4 — Preset 3 flagship) -----------
++# Read in: proxy/mcp_proxy.py, only for merchant_rzp payouts that reach
++# "processed" and then fail their downstream fulfillment check.
++# Fund account for the REVERSAL payout — must belong to the SAME
++# RazorpayX account as RZP_DEMO_FUND_ACCOUNT_ID, distinct fund account.
++# Provision with: python -m razorpayx.provision --self
++RZP_SELF_FUND_ACCOUNT_ID=
++# Read in: mock_merchants/downstream_service.py. When true (default),
++# merchant_rzp's downstream fulfillment check always fails — this is the
++# intended demo behavior for Preset 3. Set to false to rehearse Preset 1
++# (clean happy path) on the exact same merchant_rzp payout path.
++DOWNSTREAM_FORCE_FAIL=true
++
+ # --- CORS -----------------------------------------------------------
+ # Read in: proxy/mcp_proxy.py. Comma-separated list, no spaces.
+ ALLOWED_ORIGINS=http://localhost:5173
+diff --git a/dashboard/src/App.jsx b/dashboard/src/App.jsx
+index 211ae8b..799bf6b 100644
+--- a/dashboard/src/App.jsx
++++ b/dashboard/src/App.jsx
+@@ -349,6 +349,14 @@ export default function App() {
+         });
+         break;
+ 
++      // Phase 4 (Preset 3 flagship) — payout was CONFIRMED processed, but
++      // the thing it paid for wasn't. Distinct from payout_unconfirmed
++      // (which is genuinely ambiguous) — this is a known failure.
++      case "downstream_fulfillment_failed":
++        log(`✗ DOWNSTREAM FULFILLMENT FAILED — ${data.merchant_id} ₹${data.amount.toLocaleString("en-IN")}: ${data.reason}`);
++        setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "failed" }));
++        break;
++
+       // Phase 2 — payout polled to timeout still queued/processing.
+       // Genuinely unknown, not a known failure, so this does NOT reuse
+       // mandate_exceeded's shape or trigger compensation. Full routing to
+diff --git a/dashboard/src/components/EndStatePanel.jsx b/dashboard/src/components/EndStatePanel.jsx
+index 8295c3e..6da02b9 100644
+--- a/dashboard/src/components/EndStatePanel.jsx
++++ b/dashboard/src/components/EndStatePanel.jsx
+@@ -6,6 +6,12 @@ export default function EndStatePanel({ data, onClose }) {
+   if (!data) return null;
+   const isUdir = data.type === "udir_payload";
+   const isAuthBlocked = data.type === "authorization_blocked";
++  // Phase 4 (Preset 3 flagship) — a real payout was confirmed processed,
++  // downstream fulfillment failed, and Aegis fired a real second payout
++  // back to a self-owned fund account. Distinct from the liability-report
++  // bucket below: money actually moved twice here, real settlement refs
++  // both ways, not "no dispute filed."
++  const isReversal = data.type === "real_payout_reversed";
+ 
+   // Three distinct pre-payment blocks share this one banner type — Wallet
+   // (agent's own configured authority), Policy (rule compliance), and
+@@ -35,14 +41,14 @@ export default function EndStatePanel({ data, onClose }) {
+         {/* Header */}
+         <div
+           className="px-4 py-3 flex items-start justify-between border-b"
+-          style={{ borderColor: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950" }}
++          style={{ borderColor: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : isReversal ? "#a371f7" : "#3fb950" }}
+         >
+           <div>
+             <div
+               className="text-xs font-bold uppercase tracking-wider mb-1"
+-              style={{ color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950" }}
++              style={{ color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : isReversal ? "#a371f7" : "#3fb950" }}
+             >
+-              {isAuthBlocked ? "Authorization Blocked" : isUdir ? "Network-Fault Detected" : "Agent-Fault Detected"}
++              {isAuthBlocked ? "Authorization Blocked" : isUdir ? "Network-Fault Detected" : isReversal ? "Real Payout Reversed" : "Agent-Fault Detected"}
+             </div>
+             <div className="text-sm font-semibold text-white">{data.label}</div>
+           </div>
+@@ -59,15 +65,17 @@ export default function EndStatePanel({ data, onClose }) {
+           <span
+             className="text-xs px-2 py-1 rounded font-semibold"
+             style={{
+-              background: isAuthBlocked ? "rgba(210,153,34,0.15)" : isUdir ? "rgba(88,166,255,0.15)" : "rgba(63,185,80,0.15)",
+-              color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950",
+-              border: `1px solid ${isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950"}`,
++              background: isAuthBlocked ? "rgba(210,153,34,0.15)" : isUdir ? "rgba(88,166,255,0.15)" : isReversal ? "rgba(163,113,247,0.15)" : "rgba(63,185,80,0.15)",
++              color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : isReversal ? "#a371f7" : "#3fb950",
++              border: `1px solid ${isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : isReversal ? "#a371f7" : "#3fb950"}`,
+             }}
+           >
+             {isAuthBlocked
+               ? authBlockLabel
+               : isUdir
+               ? "UDIR Payload — ready for NPCI"
++              : isReversal
++              ? "Confirmed downstream failure — real reversal issued"
+               : "Internal Liability Report — no dispute filed"}
+           </span>
+         </div>
+@@ -106,7 +114,7 @@ export default function EndStatePanel({ data, onClose }) {
+             ⛔ No payout attempted — nothing was paid, so there is nothing for Aegis to compensate.
+           </div>
+         )}
+-        {!isAuthBlocked && !isUdir && (
++        {!isAuthBlocked && !isUdir && !isReversal && (
+           <div
+             className="mx-4 mb-4 rounded px-3 py-2 text-xs"
+             style={{ background: "rgba(63,185,80,0.1)", border: "1px solid #3fb950", color: "#3fb950" }}
+@@ -122,6 +130,14 @@ export default function EndStatePanel({ data, onClose }) {
+             ↗ UDIR-shaped payload ready — network/infrastructure failure confirmed by raw gateway code.
+           </div>
+         )}
++        {isReversal && (
++          <div
++            className="mx-4 mb-4 rounded px-3 py-2 text-xs"
++            style={{ background: "rgba(163,113,247,0.1)", border: "1px solid #a371f7", color: "#a371f7" }}
++          >
++            ↩ Original payout confirmed processed — downstream fulfillment failed, so Aegis fired a real second payout back to a self-owned account. Both settlement refs above are real RazorpayX transactions.
++          </div>
++        )}
+       </motion.div>
+     </AnimatePresence>
+   );
+diff --git a/mock_merchants/downstream_service.py b/mock_merchants/downstream_service.py
+new file mode 100644
+index 0000000..6a730b0
+--- /dev/null
++++ b/mock_merchants/downstream_service.py
+@@ -0,0 +1,50 @@
++# -*- coding: utf-8 -*-
++"""
++mock_merchants/downstream_service.py
++The "downstream fulfillment/booking" step for the Preset 3 (flagship)
++scenario: "payout succeeds, then the thing it paid for doesn't happen."
++
++This is deliberately NOT another payment gateway call — merchant_rzp has
++no mock HTTP merchant to call (it's a real RazorpayX payout, not a mock
++/charge endpoint), so there's nothing to simulate a booking-confirmation
++failure against except a local, controlled check. And it's deliberately
++NOT randomly flaky like merchant_e's /policy endpoint — Preset 3 is meant
++to be 100% reproducible on demand for a live demo (per the design
++conversation: a judge watching once needs a guaranteed story, not a coin
++flip).
++
++Wired into proxy/mcp_proxy.py's /pay, merchant_rzp branch, only after a
++payout has polled to "processed" — this checks what happens *after* the
++money definitely moved, which is the whole point of the scenario.
++"""
++from __future__ import annotations
++
++import os
++
++# When true (the default), every merchant_rzp fulfillment check fails —
++# this is the intended demo behavior for Preset 3. Set to "false" in .env
++# to rehearse Preset 1 (clean happy path) through the exact same
++# merchant_rzp payout path without triggering the downstream failure.
++DOWNSTREAM_FORCE_FAIL = os.getenv("DOWNSTREAM_FORCE_FAIL", "true").lower() == "true"
++
++
++async def confirm_fulfillment(merchant_id: str, settlement_ref: str, amount: float) -> dict:
++    """Returns {"confirmed": bool, "reason": str}.
++
++    A real integration would call the merchant's own booking/fulfillment
++    API here. merchant_rzp has none — "RazorpayX Live Payout" isn't a
++    bookable merchant, it's a stand-in for "a real payout went out for
++    some real-world thing" — so this is a local, deterministic stand-in
++    for that missing confirmation call.
++    """
++    if DOWNSTREAM_FORCE_FAIL:
++        return {
++            "confirmed": False,
++            "reason": (
++                f"Fulfillment/booking confirmation for {merchant_id} "
++                f"(settlement_ref={settlement_ref}, ₹{amount:,.2f}) was "
++                "never received — the payout succeeded but the thing it "
++                "paid for was not confirmed on the other end."
++            ),
++        }
++    return {"confirmed": True, "reason": "Fulfillment confirmed."}
+diff --git a/proxy/mcp_proxy.py b/proxy/mcp_proxy.py
+index 4ef55ee..f4b9000 100644
+--- a/proxy/mcp_proxy.py
++++ b/proxy/mcp_proxy.py
+@@ -43,9 +43,11 @@ from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
+ from authorization.trace import authorize
+ from authorization.wallet import get_wallet
+ from authorization.policy import DEFAULT_POLICY_CONFIG
+-from razorpayx.client import create_payout, poll_payout
++from razorpayx.client import create_payout, poll_payout, reverse_payout
++from mock_merchants.downstream_service import confirm_fulfillment
+ 
+ RZP_DEMO_FUND_ACCOUNT_ID = os.getenv("RZP_DEMO_FUND_ACCOUNT_ID")
++RZP_SELF_FUND_ACCOUNT_ID = os.getenv("RZP_SELF_FUND_ACCOUNT_ID")
+ 
+ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+ REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
+@@ -298,6 +300,68 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
+                         "outcome unconfirmed, holding before any recovery action."
+                     ),
+                 })
++            elif merchant_status == "settled":
++                # Phase 4 (Preset 3 flagship) — the payout is CONFIRMED
++                # processed (not uncertain), so this is a known failure if
++                # the downstream fulfillment/booking never happens, not an
++                # ambiguous one. Auto-reversal is safe here specifically
++                # because there's no double-spend risk: we know for
++                # certain the money moved and for certain the thing it
++                # paid for didn't.
++                fulfillment = await confirm_fulfillment(merchant_id, payout_id, amount)
++                if not fulfillment["confirmed"]:
++                    publish_event(wid, "downstream_fulfillment_failed", {
++                        "merchant_id": merchant_id, "payee": payee, "amount": amount,
++                        "settlement_ref": payout_id, "utr": payout.get("utr"),
++                        "reason": fulfillment["reason"],
++                    })
++                    if _aegis_enabled:
++                        if not RZP_SELF_FUND_ACCOUNT_ID:
++                            publish_event(wid, "compensation_error", {
++                                "workflow_id": wid,
++                                "error": (
++                                    "RZP_SELF_FUND_ACCOUNT_ID not set — cannot fire a real "
++                                    "reversal payout. Run `python -m razorpayx.provision --self` "
++                                    "and add it to .env."
++                                ),
++                            })
++                        else:
++                            try:
++                                reversal = await reverse_payout(
++                                    original_payout_id=payout_id,
++                                    self_fund_account_id=RZP_SELF_FUND_ACCOUNT_ID,
++                                    amount_paise=int(amount * 100),
++                                )
++                                publish_event(wid, "final_output", {
++                                    "type": "real_payout_reversed",
++                                    "label": "Downstream failure — real reversal payout sent",
++                                    "payload": {
++                                        "merchant_id": merchant_id, "payee": payee, "amount": amount,
++                                        "original_settlement_ref": payout_id,
++                                        "original_utr": payout.get("utr"),
++                                        "downstream_failure_reason": fulfillment["reason"],
++                                        "reversal_settlement_ref": reversal.get("id", ""),
++                                        "reversal_utr": reversal.get("utr"),
++                                        "reversal_status": reversal.get("status", ""),
++                                    },
++                                })
++                            except Exception as exc:
++                                publish_event(wid, "compensation_error", {
++                                    "workflow_id": wid, "error": f"Reversal payout failed: {exc}",
++                                })
++                    else:
++                        # Phase 9.1's existing OFF-state signal, reused —
++                        # same "money stranded, nothing recovers it"
++                        # visual as the mandate_exceeded path, now also
++                        # covering a real-money downstream failure.
++                        publish_event(wid, "aegis_disabled_no_compensation", {
++                            "workflow_id": wid,
++                            "message": (
++                                f"Aegis is OFF — real payout {payout_id} (₹{amount:,.2f}) "
++                                "succeeded but its downstream fulfillment failed. "
++                                "No reversal triggered. Money is stranded."
++                            ),
++                        })
+         except Exception as exc:
+             merchant_data = {"error": str(exc)}
+             status_code = 502
+diff --git a/razorpayx/client.py b/razorpayx/client.py
+index 6d90df9..2db93ba 100644
+--- a/razorpayx/client.py
++++ b/razorpayx/client.py
+@@ -156,6 +156,35 @@ async def get_payout(payout_id: str) -> dict:
+         return resp.json()
+ 
+ 
++async def reverse_payout(
++    original_payout_id: str,
++    self_fund_account_id: str,
++    amount_paise: int,
++    narration: str | None = None,
++) -> dict:
++    """Phase 4 (Preset 3 flagship) — RazorpayX Payouts have no undo/refund
++    endpoint; per Razorpay's docs, a "reversal" only happens automatically
++    when a payout FAILS, crediting the amount back on its own. There is no
++    API to trigger that for a payout that already succeeded. So "sort it
++    out" for a confirmed-processed payout whose downstream fulfillment
++    failed has to mean firing a second, real payout of the same amount
++    back to a fund account you control — a genuine, auditable reversal,
++    not a database rollback pretending money moved back by itself.
++
++    self_fund_account_id must point at a fund account belonging to the
++    SAME RazorpayX account (see razorpayx/provision.py's provision_self())
++    — not the original recipient's fund account.
++    """
++    reference_id = f"reversal-{original_payout_id}"[:40]
++    return await create_payout(
++        fund_account_id=self_fund_account_id,
++        amount_paise=amount_paise,
++        purpose="refund",
++        reference_id=reference_id,
++        narration=(narration or f"Aegis reversal of {original_payout_id}")[:30],
++    )
++
++
+ @dataclass
+ class PayoutPollResult:
+     """Phase 2 — replaces the old blanket 'queued/processing/processed all
+diff --git a/razorpayx/provision.py b/razorpayx/provision.py
+index 7664c2c..5b27268 100644
+--- a/razorpayx/provision.py
++++ b/razorpayx/provision.py
+@@ -3,11 +3,28 @@ razorpayx/provision.py
+ Run ONCE to create a test Contact + Fund Account. Print the fund_account_id
+ and put it in .env as RZP_DEMO_FUND_ACCOUNT_ID — the payout path reuses it
+ on every run instead of creating a new contact per payment.
++
++Also provisions a SECOND fund account for Phase 4 (Preset 3 flagship) —
++reverse_payout() needs somewhere to send a reversal that lands back on the
++same RazorpayX account, distinct from the demo payee's fund account.
++Run with --self to provision that one instead (or in addition).
+ """
++import argparse
+ import asyncio
+ from razorpayx.client import create_contact, create_fund_account_vpa
+ 
+-async def main():
++async def main(self_account: bool = False):
++    if self_account:
++        contact = await create_contact(name="Aegis Reversal Account (self)", contact_type="self")
++        print("contact_id:", contact["id"])
++        # Any syntactically valid VPA works in test mode. Distinct address
++        # from the demo payee's so the two fund accounts are never confused
++        # in the RazorpayX dashboard.
++        fa = await create_fund_account_vpa(contact["id"], address="aegis-reversal@upi")
++        print("fund_account_id:", fa["id"])
++        print("\nAdd to .env: RZP_SELF_FUND_ACCOUNT_ID=" + fa["id"])
++        return
++
+     contact = await create_contact(name="Rahul (Conference Registration)", contact_type="vendor")
+     print("contact_id:", contact["id"])
+     # Any syntactically valid VPA works in test mode — RazorpayX doesn't use
+@@ -23,4 +40,8 @@ async def main():
+     )
+ 
+ if __name__ == "__main__":
+-    asyncio.run(main())
+\ No newline at end of file
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--self", action="store_true", dest="self_account",
++                         help="Provision the reversal fund account (RZP_SELF_FUND_ACCOUNT_ID) instead of the demo payee one.")
++    args = parser.parse_args()
++    asyncio.run(main(self_account=args.self_account))
+\ No newline at end of file
