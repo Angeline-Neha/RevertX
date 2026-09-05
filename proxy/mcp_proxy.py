@@ -41,6 +41,8 @@ from state_log.redis_client import (
 import db.client as db
 from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
 from authorization.trace import authorize
+from authorization.wallet import get_wallet
+from authorization.policy import DEFAULT_POLICY_CONFIG
 from razorpayx.client import create_payout
 
 RZP_DEMO_FUND_ACCOUNT_ID = os.getenv("RZP_DEMO_FUND_ACCOUNT_ID")
@@ -172,7 +174,7 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
     auth_result = await authorize(
         workflow_id=wid, agent_id="primary_agent", amount=amount,
         category=expected_data.get("category", "vendor_payment"),
-        recipient_id=payee,
+        recipient_id=payee, merchant_id=merchant_id,
     )
     if auth_result["decision"] == "BLOCK":
         await async_redis.aclose()
@@ -366,6 +368,38 @@ async def session_metrics():
 def aegis_status():
     """Phase 9.1 — lets the dashboard read the current Aegis on/off state on connect."""
     return {"aegis_enabled": _aegis_enabled}
+
+
+@app.get("/wallet/{agent_id}")
+async def get_wallet_state(agent_id: str):
+    """Agent Wallet panel — live per-txn/daily limits + spend. No auth
+    required (matches /session_metrics, /aegis_status): plain fetch() from
+    the dashboard, non-sensitive to this single-agent demo. Same
+    get_wallet() authorize() itself calls, so the panel can never show a
+    number that differs from what's actually enforced."""
+    wallet = await get_wallet(agent_id)
+    return {
+        "agent_id": wallet.agent_id,
+        "per_txn_limit": wallet.per_txn_limit,
+        "daily_limit": wallet.daily_limit,
+        "spent_today": wallet.spent_today,
+        "remaining_today": wallet.remaining_today,
+    }
+
+
+@app.get("/policy")
+def get_policy():
+    """Policy panel — categories/denylist/allowlist/approval threshold.
+    Reads DEFAULT_POLICY_CONFIG, the same shared instance authorize() checks
+    against, so this can never show a rule that isn't actually enforced.
+    Static today (policy has no live-changing state), unlike /wallet above."""
+    config = DEFAULT_POLICY_CONFIG
+    return {
+        "allowed_categories": sorted(config.allowed_categories),
+        "recipient_allowlist": sorted(config.recipient_allowlist) if config.recipient_allowlist is not None else None,
+        "recipient_denylist": sorted(config.recipient_denylist),
+        "human_approval_threshold": config.human_approval_threshold,
+    }
 
 
 # Repo root — same resolution primary_agent/procurement_agent.py uses for

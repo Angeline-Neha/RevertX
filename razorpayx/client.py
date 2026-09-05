@@ -35,6 +35,36 @@ async def get_balance() -> dict:
         return resp.json()
 
 
+async def get_available_balance() -> float:
+    """Real, current RazorpayX available balance in rupees — distinct from
+    the Agent Wallet's per-txn/daily limits, which are just numbers in our
+    own Postgres. Used by authorization/real_balance.py's pre-payment check
+    so a BLOCK can be based on what money actually exists, not just what
+    the agent is internally allowed to move.
+
+    Response field name varies by account type/API version (confirmed
+    'available amount' when this was first tested against this account —
+    see razorpayx/test_balance.py output). Checked defensively across the
+    field names Razorpay's docs and this account have used, in order of
+    likelihood; raises loudly rather than silently returning 0 (which
+    would block every real payout) if none match — if this fires, run
+    `python -m razorpayx.test_balance` and update the key list below to
+    match the actual field name in its printed response.
+    """
+    data = await get_balance()
+    items = data.get("items") or [data]
+    if not items:
+        raise RuntimeError(f"get_available_balance(): no balance items in response: {data}")
+    item = items[0]
+    for key in ("available_amount", "balance", "amount"):
+        if key in item:
+            return float(item[key]) / 100.0
+    raise RuntimeError(
+        f"get_available_balance(): none of the expected balance keys found in {item!r} — "
+        "update authorization/real_balance.py's key list to match the actual field name."
+    )
+
+
 async def create_contact(name: str, email: str | None = None, contact_type: str = "vendor") -> dict:
     async with httpx.AsyncClient(auth=_auth) as client:
         payload = {"name": name, "type": contact_type}

@@ -7,6 +7,21 @@ export default function EndStatePanel({ data, onClose }) {
   const isUdir = data.type === "udir_payload";
   const isAuthBlocked = data.type === "authorization_blocked";
 
+  // Three distinct pre-payment blocks share this one banner type — Wallet
+  // (agent's own configured authority), Policy (rule compliance), and
+  // Real Balance (does the money actually exist in RazorpayX right now).
+  // block_source on the payload tells them apart; keep this label honest
+  // instead of hardcoding "Agent Wallet / Policy" now that a third source
+  // exists.
+  const AUTH_BLOCK_LABELS = {
+    wallet: "Agent Wallet — never attempted, not a fault",
+    policy: "Policy — never attempted, not a fault",
+    real_balance: "Real Balance — never attempted, not a fault",
+  };
+  const authBlockLabel = isAuthBlocked
+    ? AUTH_BLOCK_LABELS[data.payload?.block_source] || "Agent Wallet / Policy — never attempted, not a fault"
+    : null;
+
   return (
     <AnimatePresence>
       <motion.div
@@ -50,7 +65,7 @@ export default function EndStatePanel({ data, onClose }) {
             }}
           >
             {isAuthBlocked
-              ? "Agent Wallet / Policy — never attempted, not a fault"
+              ? authBlockLabel
               : isUdir
               ? "UDIR Payload — ready for NPCI"
               : "Internal Liability Report — no dispute filed"}

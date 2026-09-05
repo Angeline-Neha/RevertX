@@ -20,6 +20,14 @@ class PolicyConfig:
     human_approval_threshold: float = 15000.0
 
 
+# Shared singleton — authorize() defaults to this instead of constructing a
+# fresh PolicyConfig() per call, so the Policy panel's GET /policy reads the
+# exact same object the enforcement path checks against. Two independently
+# default-constructed instances would happen to match today, but would
+# silently drift the moment either one is edited without the other.
+DEFAULT_POLICY_CONFIG = PolicyConfig()
+
+
 @dataclass
 class PolicyCheckResult:
     check: str

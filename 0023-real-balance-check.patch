@@ -1,0 +1,191 @@
+diff --git a/authorization/real_balance.py b/authorization/real_balance.py
+new file mode 100644
+index 0000000..afc86ed
+--- /dev/null
++++ b/authorization/real_balance.py
+@@ -0,0 +1,40 @@
++"""
++authorization/real_balance.py
++Third, distinct pre-payment control — separate from both the Agent Wallet
++(authorization/wallet.py, the agent's own configured authority) and Policy
++(authorization/policy.py, rule compliance). This one asks a different
++question entirely: does the money actually exist in the real RazorpayX
++account right now? Wallet and Policy can both pass while this still blocks
++— e.g. an agent well within its ₹25,000/txn authority can still exceed
++what's genuinely sitting in the account.
++
++Only meaningful for merchant_id == "merchant_rzp": mock merchants never
++touch RazorpayX, so checking a real balance against a mock charge would be
++a category error, not a safety check. Callers should skip this entirely
++for any other merchant_id.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++from razorpayx.client import get_available_balance
++
++
++@dataclass
++class RealBalanceCheckResult:
++    ok: bool
++    available: float
++    detail: str
++
++
++async def check_real_balance(amount: float) -> RealBalanceCheckResult:
++    available = await get_available_balance()
++    if amount > available:
++        return RealBalanceCheckResult(
++            ok=False, available=available,
++            detail=f"amount ₹{amount:,.2f} exceeds real RazorpayX available balance ₹{available:,.2f}",
++        )
++    return RealBalanceCheckResult(
++        ok=True, available=available,
++        detail=f"within real available balance ₹{available:,.2f}",
++    )
+diff --git a/authorization/trace.py b/authorization/trace.py
+index c8272e8..6397048 100644
+--- a/authorization/trace.py
++++ b/authorization/trace.py
+@@ -15,12 +15,20 @@ from datetime import datetime, timezone
+ 
+ from authorization.wallet import get_wallet, record_spend
+ from authorization.policy import PolicyConfig, DEFAULT_POLICY_CONFIG, evaluate, all_passed
++from authorization.real_balance import check_real_balance
+ from state_log.redis_client import publish_event
+ 
+ 
++# Only merchant_id that ever triggers a real RazorpayX payout — see
++# authorization/real_balance.py's module docstring for why the real-balance
++# check is skipped entirely for every other merchant_id.
++REAL_PAYOUT_MERCHANT_ID = "merchant_rzp"
++
++
+ async def authorize(
+     *, workflow_id: str, agent_id: str, amount: float, category: str,
+-    recipient_id: str, policy_config: PolicyConfig | None = None,
++    recipient_id: str, merchant_id: str | None = None,
++    policy_config: PolicyConfig | None = None,
+ ) -> dict:
+     """Runs the full authorization pipeline and returns
+     {"decision": "ALLOW"|"BLOCK", "trace_id": ..., "steps": [...]}.
+@@ -76,6 +84,29 @@ async def authorize(
+         })
+         return {"decision": "BLOCK", "trace_id": trace_id, "steps": steps}
+ 
++    # Third, distinct gate — separate from Wallet (agent's own configured
++    # authority) and Policy (rule compliance) above: does the money
++    # actually exist in the real RazorpayX account right now? Skipped for
++    # every merchant except merchant_rzp — mock merchants never touch
++    # RazorpayX, so checking a real balance against a mock charge would be
++    # a category error, not a safety check.
++    if merchant_id == REAL_PAYOUT_MERCHANT_ID:
++        balance_result = await check_real_balance(amount)
++        emit(
++            "check_real_balance", "pass" if balance_result.ok else "fail",
++            balance_result.detail, {"available_balance": balance_result.available},
++        )
++        if not balance_result.ok:
++            emit("final_decision", "block", balance_result.detail, {
++                "block_source": "real_balance",
++                "requested_amount": amount,
++                "available_balance": balance_result.available,
++                "financial_action": "payout not attempted",
++            })
++            return {"decision": "BLOCK", "trace_id": trace_id, "steps": steps}
++    else:
++        emit("check_real_balance", "skip", f"merchant '{merchant_id}' does not use RazorpayX — real balance check not applicable")
++
+     emit("final_decision", "allow", "all checks passed")
+     await record_spend(agent_id, amount)
+     return {"decision": "ALLOW", "trace_id": trace_id, "steps": steps}
+diff --git a/dashboard/src/components/EndStatePanel.jsx b/dashboard/src/components/EndStatePanel.jsx
+index fcfae38..8295c3e 100644
+--- a/dashboard/src/components/EndStatePanel.jsx
++++ b/dashboard/src/components/EndStatePanel.jsx
+@@ -7,6 +7,21 @@ export default function EndStatePanel({ data, onClose }) {
+   const isUdir = data.type === "udir_payload";
+   const isAuthBlocked = data.type === "authorization_blocked";
+ 
++  // Three distinct pre-payment blocks share this one banner type — Wallet
++  // (agent's own configured authority), Policy (rule compliance), and
++  // Real Balance (does the money actually exist in RazorpayX right now).
++  // block_source on the payload tells them apart; keep this label honest
++  // instead of hardcoding "Agent Wallet / Policy" now that a third source
++  // exists.
++  const AUTH_BLOCK_LABELS = {
++    wallet: "Agent Wallet — never attempted, not a fault",
++    policy: "Policy — never attempted, not a fault",
++    real_balance: "Real Balance — never attempted, not a fault",
++  };
++  const authBlockLabel = isAuthBlocked
++    ? AUTH_BLOCK_LABELS[data.payload?.block_source] || "Agent Wallet / Policy — never attempted, not a fault"
++    : null;
++
+   return (
+     <AnimatePresence>
+       <motion.div
+@@ -50,7 +65,7 @@ export default function EndStatePanel({ data, onClose }) {
+             }}
+           >
+             {isAuthBlocked
+-              ? "Agent Wallet / Policy — never attempted, not a fault"
++              ? authBlockLabel
+               : isUdir
+               ? "UDIR Payload — ready for NPCI"
+               : "Internal Liability Report — no dispute filed"}
+diff --git a/proxy/mcp_proxy.py b/proxy/mcp_proxy.py
+index 4c0dc30..fcbe5b5 100644
+--- a/proxy/mcp_proxy.py
++++ b/proxy/mcp_proxy.py
+@@ -174,7 +174,7 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
+     auth_result = await authorize(
+         workflow_id=wid, agent_id="primary_agent", amount=amount,
+         category=expected_data.get("category", "vendor_payment"),
+-        recipient_id=payee,
++        recipient_id=payee, merchant_id=merchant_id,
+     )
+     if auth_result["decision"] == "BLOCK":
+         await async_redis.aclose()
+diff --git a/razorpayx/client.py b/razorpayx/client.py
+index 0d331f7..bd5b9c5 100644
+--- a/razorpayx/client.py
++++ b/razorpayx/client.py
+@@ -35,6 +35,36 @@ async def get_balance() -> dict:
+         return resp.json()
+ 
+ 
++async def get_available_balance() -> float:
++    """Real, current RazorpayX available balance in rupees — distinct from
++    the Agent Wallet's per-txn/daily limits, which are just numbers in our
++    own Postgres. Used by authorization/real_balance.py's pre-payment check
++    so a BLOCK can be based on what money actually exists, not just what
++    the agent is internally allowed to move.
++
++    Response field name varies by account type/API version (confirmed
++    'available amount' when this was first tested against this account —
++    see razorpayx/test_balance.py output). Checked defensively across the
++    field names Razorpay's docs and this account have used, in order of
++    likelihood; raises loudly rather than silently returning 0 (which
++    would block every real payout) if none match — if this fires, run
++    `python -m razorpayx.test_balance` and update the key list below to
++    match the actual field name in its printed response.
++    """
++    data = await get_balance()
++    items = data.get("items") or [data]
++    if not items:
++        raise RuntimeError(f"get_available_balance(): no balance items in response: {data}")
++    item = items[0]
++    for key in ("available_amount", "balance", "amount"):
++        if key in item:
++            return float(item[key]) / 100.0
++    raise RuntimeError(
++        f"get_available_balance(): none of the expected balance keys found in {item!r} — "
++        "update authorization/real_balance.py's key list to match the actual field name."
++    )
++
++
+ async def create_contact(name: str, email: str | None = None, contact_type: str = "vendor") -> dict:
+     async with httpx.AsyncClient(auth=_auth) as client:
+         payload = {"name": name, "type": contact_type}

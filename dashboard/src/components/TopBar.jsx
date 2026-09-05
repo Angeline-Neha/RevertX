@@ -1,6 +1,8 @@
 import BeforeAfterToggle from "./BeforeAfterToggle.jsx";
+import WalletPanel from "./WalletPanel.jsx";
+import PolicyPanel from "./PolicyPanel.jsx";
 
-export default function TopBar({ workflowId, budget, connected, onNewRun }) {
+export default function TopBar({ workflowId, budget, connected, onNewRun, liveWalletState }) {
   const pct = budget.limit > 0 ? (budget.used / budget.limit) * 100 : 0;
   const barColor = pct > 90 ? "#f85149" : pct > 70 ? "#d29922" : "#3fb950";
 
@@ -34,6 +36,14 @@ export default function TopBar({ workflowId, budget, connected, onNewRun }) {
             </span>
           </div>
         </div>
+
+        {/* Agent Wallet meter — separate from Budget above: this is the
+            agent's own standing financial authority, not this workflow's
+            spending cap */}
+        <WalletPanel liveState={liveWalletState} />
+
+        {/* Policy rules — click-to-expand, static */}
+        <PolicyPanel />
 
         {/* Connection status */}
         <div className="flex items-center gap-1.5">

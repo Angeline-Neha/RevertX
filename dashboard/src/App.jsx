@@ -39,6 +39,10 @@ export default function App() {
   const [endState, setEndState] = useState(null);
   const [escalation, setEscalation] = useState(null);  // Phase 10.2
   const [budget, setBudget] = useState({ used: 0, limit: 0 });
+  // Populated from authorization_trace's check_wallet_authority step —
+  // null until the first /pay call runs authorize(), so WalletPanel falls
+  // back to its own one-time fetch until then.
+  const [liveWalletState, setLiveWalletState] = useState(null);
   const [recentWorkflows, setRecentWorkflows] = useState([]);
   // Evidence trail (Feature E) — keyed by merchant_id for payments, by
   // compensation node name for the compensating agent's stages. Populated
@@ -354,6 +358,17 @@ export default function App() {
       case "authorization_trace": {
         const { step, status, detail } = data;
         log(`  [Auth:${step}] ${status}${detail ? ` — ${detail}` : ""}`);
+        // check_wallet_authority's emit() carries the numbers WalletPanel
+        // needs directly — no extra fetch, just read them off the step.
+        if (step === "check_wallet_authority") {
+          setLiveWalletState({
+            agent_id: "primary_agent",
+            per_txn_limit: data.per_txn_limit,
+            daily_limit: data.daily_limit,
+            spent_today: data.spent_today,
+            remaining_today: data.remaining_today,
+          });
+        }
         if (step === "final_decision" && status === "block") {
           setEndState({
             type: "authorization_blocked",
@@ -454,7 +469,13 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
-      <TopBar workflowId={workflowId} budget={budget} connected={connected} onNewRun={disconnect} />
+      <TopBar
+        workflowId={workflowId}
+        budget={budget}
+        connected={connected}
+        onNewRun={disconnect}
+        liveWalletState={liveWalletState}
+      />
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left — Agent Terminal */}
