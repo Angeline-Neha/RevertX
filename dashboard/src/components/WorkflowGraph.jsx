@@ -1,15 +1,14 @@
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   ReactFlow,
   Background,
   Controls,
   Handle,
   Position,
-  BaseEdge,
-  getBezierPath,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
+import EvidencePopover from "./EvidencePopover.jsx";
 
 const STATUS_STYLES = {
   pending:     { bg: "#484f58", border: "#484f58", text: "#c9d1d9", icon: "○" },
@@ -19,27 +18,68 @@ const STATUS_STYLES = {
   skipped:     { bg: "#2a2a2a", border: "#484f58", text: "#8b949e", icon: "—" },
 };
 
+// Feature D — confidence/"evaluating" flicker. While a node is in_progress
+// (i.e. between a compensation_trace "start" and its matching "end"/"error"/
+// "skip"), cycle through a small set of tentative-sounding phrases instead
+// of a static "loading" label, so the eventual verdict reads as the product
+// of real evaluation rather than an instant, pre-baked answer. Purely a
+// rendering choice — the underlying latency (a real HTTP call to a mock
+// merchant's /policy endpoint) already exists today.
+const FLICKER_PHRASES = [
+  "Evaluating...",
+  "Leaning refundable...",
+  "Leaning non-refundable...",
+  "Checking the fine print...",
+];
+
+function useFlicker(active) {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    if (!active) { setI(0); return; }
+    const id = setInterval(() => setI((n) => (n + 1) % FLICKER_PHRASES.length), 650);
+    return () => clearInterval(id);
+  }, [active]);
+  return FLICKER_PHRASES[i];
+}
+
 function AegisNode({ data }) {
   const s = STATUS_STYLES[data.status] || STATUS_STYLES.pending;
+  const flickering = data.status === "in_progress";
+  const flickerText = useFlicker(flickering);
+  const clickable = data.hasEvidence && data.status !== "pending";
+
   return (
     <motion.div
-      className={`rounded-lg px-4 py-3 min-w-[140px] text-center relative ${s.pulse ? "node-pulse" : ""}`}
-      title={data.status === "failed" && data.error ? data.error : undefined}
+      className={`rounded-lg px-4 py-3 min-w-[140px] text-center relative ${s.pulse ? "node-pulse" : ""} ${clickable ? "cursor-pointer" : ""}`}
+      title={
+        data.status === "failed" && data.error
+          ? data.error
+          : clickable
+            ? "Click for details"
+            : undefined
+      }
       style={{
         background: s.bg,
         border: `2px solid ${s.border}`,
         color: s.text,
         fontSize: 13,
         fontWeight: 600,
+        opacity: clickable ? 1 : data.status === "pending" ? 0.75 : 1,
       }}
       initial={{ scale: 0.8, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
+      whileHover={clickable ? { scale: 1.04 } : undefined}
       transition={{ duration: 0.3 }}
     >
       <Handle type="target" position={Position.Left} style={{ background: s.border }} />
       <div className="text-lg mb-1">{s.icon}</div>
       <div>{data.label}</div>
-      {data.subLabel && <div className="text-xs opacity-70 mt-0.5">{data.subLabel}</div>}
+      {flickering ? (
+        <div className="text-[10px] italic opacity-80 mt-0.5">{flickerText}</div>
+      ) : (
+        data.subLabel && <div className="text-xs opacity-70 mt-0.5">{data.subLabel}</div>
+      )}
+      {clickable && <div className="text-[9px] opacity-50 mt-1">click for details</div>}
       <Handle type="source" position={Position.Right} style={{ background: s.border }} />
     </motion.div>
   );
@@ -69,8 +109,22 @@ const COMP_NODE_LABELS = {
   anomaly_check:           "Anomaly Check (LLM, advisory)",
 };
 
-export default function WorkflowGraph({ merchants, nodeStates, compensationNodes }) {
+export default function WorkflowGraph({
+  merchants, nodeStates, compensationNodes,
+  paymentEvidence = {}, compensationEvidence = {},
+}) {
   const showCompensation = compensationNodes.length > 0;
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+
+  // Clicking a node that has nothing to show yet (still pending) is a
+  // no-op; clicking the currently-open node again closes it.
+  function handleNodeClick(_event, node) {
+    const evidence = node.id.startsWith("comp_")
+      ? compensationEvidence[node.id.slice(5)]
+      : paymentEvidence[node.id];
+    if (!evidence) return;
+    setSelectedNodeId((prev) => (prev === node.id ? null : node.id));
+  }
 
   const nodes = useMemo(() => {
     const result = merchants.map((m, i) => ({
@@ -86,6 +140,7 @@ export default function WorkflowGraph({ merchants, nodeStates, compensationNodes
         label: m.label || `Merchant ${m.id.replace(/^merchant_/, "").toUpperCase()}`,
         subLabel: m.subLabel || (m.amount != null ? `₹${m.amount.toLocaleString("en-IN")}` : undefined),
         status: nodeStates[m.id] || "pending",
+        hasEvidence: !!paymentEvidence[m.id],
       },
     }));
 
@@ -103,13 +158,14 @@ export default function WorkflowGraph({ merchants, nodeStates, compensationNodes
             // the actual Gemini API error — doesn't only live in the
             // scrollback log.
             error: cn.error,
+            hasEvidence: !!compensationEvidence[cn.id],
           },
         });
       });
     }
 
     return result;
-  }, [merchants, nodeStates, compensationNodes, showCompensation]);
+  }, [merchants, nodeStates, compensationNodes, showCompensation, paymentEvidence, compensationEvidence]);
 
   const edges = useMemo(() => {
     // Chain each merchant to the next in the order they were first seen
@@ -153,6 +209,28 @@ export default function WorkflowGraph({ merchants, nodeStates, compensationNodes
     return e;
   }, [merchants, compensationNodes, showCompensation]);
 
+  // Resolve what the currently-open popover (if any) should show.
+  let popover = null;
+  if (selectedNodeId) {
+    const isComp = selectedNodeId.startsWith("comp_");
+    const nodeId = isComp ? selectedNodeId.slice(5) : selectedNodeId;
+    const evidence = isComp ? compensationEvidence[nodeId] : paymentEvidence[nodeId];
+    if (evidence) {
+      const title = isComp
+        ? COMP_NODE_LABELS[nodeId] || nodeId.replace(/_/g, " ")
+        : (merchants.find((m) => m.id === nodeId)?.label || nodeId);
+      popover = (
+        <EvidencePopover
+          kind={isComp ? "compensation" : "payment"}
+          nodeId={nodeId}
+          title={title}
+          evidence={evidence}
+          onClose={() => setSelectedNodeId(null)}
+        />
+      );
+    }
+  }
+
   return (
     <div className="flex-1 relative" style={{ background: "#0d1117" }}>
       <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] border-b border-[var(--border)] uppercase tracking-wider bg-[var(--bg-secondary)]">
@@ -163,6 +241,7 @@ export default function WorkflowGraph({ merchants, nodeStates, compensationNodes
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          onNodeClick={handleNodeClick}
           fitView
           fitViewOptions={{ padding: 0.3 }}
           proOptions={{ hideAttribution: true }}
@@ -171,6 +250,7 @@ export default function WorkflowGraph({ merchants, nodeStates, compensationNodes
           <Controls style={{ background: "#161b22", border: "1px solid #30363d" }} />
         </ReactFlow>
       </div>
+      {popover}
     </div>
   );
 }

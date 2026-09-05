@@ -40,6 +40,21 @@ export default function App() {
   const [escalation, setEscalation] = useState(null);  // Phase 10.2
   const [budget, setBudget] = useState({ used: 0, limit: 0 });
   const [recentWorkflows, setRecentWorkflows] = useState([]);
+  // Evidence trail (Feature E) — keyed by merchant_id for payments, by
+  // compensation node name for the compensating agent's stages. Populated
+  // from events the backend already publishes; nothing new is fetched here,
+  // this just retains what handleEvent previously only ever logged and
+  // discarded.
+  const [paymentEvidence, setPaymentEvidence] = useState({});
+  const [compensationEvidence, setCompensationEvidence] = useState({});
+  // Several compensation_trace events (extract_policy, compute_refund_amount)
+  // don't carry merchant_id themselves — the undo loop processes one
+  // merchant at a time, so we track whichever merchant_id was last seen on
+  // a trace that DID include one (fetch_policy start, attempt_refund) and
+  // attribute merchant-less events to it. A ref (not state) because this
+  // must be readable synchronously between rapid-fire events, not after a
+  // render.
+  const activeCompMerchantRef = useRef(null);
   const wsRef = useRef(null);
 
   const log = useCallback((msg) => {
@@ -82,6 +97,9 @@ export default function App() {
     setEndState(null);
     setEscalation(null);
     setBudget({ used: 0, limit: 0 });
+    setPaymentEvidence({});
+    setCompensationEvidence({});
+    activeCompMerchantRef.current = null;
   }, []);
 
   const connectWS = useCallback((wid) => {
@@ -135,6 +153,13 @@ export default function App() {
         upsertMerchant(data.merchant_id, data.payee, data.amount);
         log(`→ Paying ${data.merchant_id} — ₹${data.amount.toLocaleString("en-IN")} (${data.item})`);
         setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "in_progress" }));
+        setPaymentEvidence((prev) => ({
+          ...prev,
+          [data.merchant_id]: {
+            merchantId: data.merchant_id, payee: data.payee, amount: data.amount,
+            item: data.item, requestStatus: "in_progress",
+          },
+        }));
         break;
 
       case "reconciliation_result":
@@ -146,6 +171,14 @@ export default function App() {
           log(`✗ ${data.merchant_id} mismatch: ${data.mismatch_type}`);
         }
         setBudget((prev) => ({ ...prev, used: data.status === "settled" ? prev.used + (data.amount || 0) : prev.used }));
+        setPaymentEvidence((prev) => ({
+          ...prev,
+          [data.merchant_id]: {
+            ...(prev[data.merchant_id] || { merchantId: data.merchant_id }),
+            match: data.match, mismatchType: data.mismatch_type,
+            requestStatus: data.match ? "settled" : "mismatch",
+          },
+        }));
         break;
 
       case "mandate_exceeded":
@@ -159,6 +192,14 @@ export default function App() {
         upsertMerchant(data.merchant_id, data.payee, data.amount);
         log(`✗ MANDATE EXCEEDED — ₹${data.amount} rejected. Budget: ₹${data.budget_used} / ₹${data.budget_limit}`);
         setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "failed" }));
+        setPaymentEvidence((prev) => ({
+          ...prev,
+          [data.merchant_id]: {
+            merchantId: data.merchant_id, payee: data.payee, amount: data.amount,
+            item: data.item, requestStatus: "mandate_exceeded",
+            budgetUsed: data.budget_used, budgetLimit: data.budget_limit,
+          },
+        }));
         break;
 
       case "compensation_started":
@@ -166,10 +207,22 @@ export default function App() {
         setCompensationNodes([]);
         setLlmStream("");
         setMathLine(null);
+        setCompensationEvidence({});
+        activeCompMerchantRef.current = null;
         break;
 
       case "compensation_trace": {
         const { node, status, error } = data;
+        if (data.merchant_id) activeCompMerchantRef.current = data.merchant_id;
+        setCompensationEvidence((prev) => ({
+          ...prev,
+          [node]: {
+            ...(prev[node] || {}),
+            node, status, error,
+            merchantId: data.merchant_id || activeCompMerchantRef.current || undefined,
+            ...data,
+          },
+        }));
         // _trace() in graph.py attaches {"error": str(exc)} on status
         // "error" events (e.g. extract_policy_terms_node's except
         // clause), but that detail was previously dropped here — the log
@@ -218,10 +271,30 @@ export default function App() {
       case "math_computation":
         setMathLine({ formula: data.formula, isFailSafe: !!data.is_fail_safe });
         log(`  [Math] ${data.formula}`);
+        setCompensationEvidence((prev) => ({
+          ...prev,
+          compute_refund_amount: {
+            ...(prev.compute_refund_amount || {}),
+            formula: data.formula, isFailSafe: !!data.is_fail_safe,
+            merchantId: activeCompMerchantRef.current,
+          },
+        }));
         break;
 
       case "refund_halted":
-        log(`⚠ Refund halted for ${data.merchant_id}: ${data.message}`);
+      case "refund_success":
+      case "refund_failed":
+        if (event_type === "refund_halted") log(`⚠ Refund halted for ${data.merchant_id}: ${data.message}`);
+        if (event_type === "refund_success") log(`✓ Refund recovered for ${data.merchant_id}: ₹${(data.amount_recovered || 0).toLocaleString("en-IN")}`);
+        if (event_type === "refund_failed") log(`✗ Refund failed for ${data.merchant_id}: ${data.message}`);
+        setCompensationEvidence((prev) => ({
+          ...prev,
+          attempt_refund: {
+            ...(prev.attempt_refund || {}),
+            outcome: data.outcome, amountRecovered: data.amount_recovered,
+            message: data.message, merchantId: data.merchant_id,
+          },
+        }));
         break;
 
       case "final_output":
@@ -238,6 +311,18 @@ export default function App() {
 
       case "compensation_error":
         log(`✗ Aegis compensation ERROR: ${data.error}`);
+        break;
+
+      // No mandate was ever exceeded — every planned payment settled, so
+      // there is nothing for Aegis to compensate. Previously there was no
+      // signal for this at all; the dashboard just went quiet.
+      case "workflow_complete":
+        log(`✅ Workflow completed cleanly — ₹${(data.total_paid || 0).toLocaleString("en-IN")} across ${data.merchant_count || 0} merchant(s), no intervention needed`);
+        setEndState({
+          type: "clean_success",
+          label: "Workflow completed — no intervention needed",
+          payload: data,
+        });
         break;
 
       // Phase 10.2 — policy extraction fell back to the fail-safe non-refundable
@@ -358,7 +443,13 @@ export default function App() {
 
         {/* Center — Workflow Graph */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          <WorkflowGraph merchants={merchants} nodeStates={nodeStates} compensationNodes={compensationNodes} />
+          <WorkflowGraph
+            merchants={merchants}
+            nodeStates={nodeStates}
+            compensationNodes={compensationNodes}
+            paymentEvidence={paymentEvidence}
+            compensationEvidence={compensationEvidence}
+          />
         </div>
 
         {/* Right — Reasoning Stream */}

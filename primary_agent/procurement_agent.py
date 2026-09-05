@@ -39,6 +39,7 @@ if _REPO_ROOT not in sys.path:
 
 from db.client import reset_workflow
 from primary_agent.planner import plan_procurement
+from state_log.redis_client import publish_event
 
 PROXY_URL = "http://localhost:8000"
 # PROXY_API_KEY is the canonical variable name — it's what proxy/mcp_proxy.py
@@ -155,6 +156,11 @@ async def run_procurement(workflow_id: str | None = None) -> None:
         else:
             data = resp.json()
             print(f"  → Unexpected success: {data}")
+            publish_event(wid, "workflow_complete", {
+                "outcome": "success",
+                "total_paid": 42000.0,
+                "merchant_count": 3,
+            })
 
         print(f"\n[Aegis Demo] Workflow ID: {wid}")
         print(f"[Aegis Demo] Connect the dashboard to ws://localhost:8000/ws/{wid} to see live events.")
@@ -234,13 +240,24 @@ async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id:
             "budget_limit": budget_limit,
         })
 
+        total_paid = 0.0
+        mandate_exceeded_hit = False
         for p in plan:
             payee = CATALOG_BY_ID[p.merchant_id].payee
             result = await _pay(client, wid, p.merchant_id, p.amount, payee, p.item)
             if result["status_code"] == 403:
                 print("\n[Primary Agent] CRASHED — earlier payments are now stranded.")
                 print("[Aegis]         Compensating agent triggered automatically. Watch the dashboard.\n")
+                mandate_exceeded_hit = True
                 break
+            total_paid += p.amount
+
+        if not mandate_exceeded_hit:
+            publish_event(wid, "workflow_complete", {
+                "outcome": "success",
+                "total_paid": total_paid,
+                "merchant_count": len(plan),
+            })
 
         print(f"\n[Aegis Demo] Workflow ID: {wid}")
         print(f"[Aegis Demo] Connect the dashboard to ws://localhost:8000/ws/{wid} to see live events.")
@@ -259,5 +276,3 @@ if __name__ == "__main__":
         asyncio.run(run_procurement_with_plan(args.goal, args.budget, args.workflow_id))
     else:
         asyncio.run(run_procurement(args.workflow_id))
-
-
