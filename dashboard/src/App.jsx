@@ -6,6 +6,8 @@ import ReasoningStream from "./components/ReasoningStream.jsx";
 import MetricsBar from "./components/MetricsBar.jsx";
 import EndStatePanel from "./components/EndStatePanel.jsx";
 import TriggerPanel from "./components/TriggerPanel.jsx";
+import IntroSequence from "./components/IntroSequence.jsx";
+import "./intro.css";
 
 // Batch eval metrics — from last run of test_harness/run_batch_eval.py.
 // These numbers must match results.json committed to the repo exactly —
@@ -28,6 +30,8 @@ function getWorkflowId() {
 
 export default function App() {
   const [workflowId, setWorkflowId] = useState(getWorkflowId);
+  const [showIntro, setShowIntro] = useState(true);
+  const finishIntro = useCallback(() => setShowIntro(false), []);
   const [inputId, setInputId] = useState("");
   const [connected, setConnected] = useState(false);
   const [terminalLines, setTerminalLines] = useState([]);
@@ -493,7 +497,7 @@ export default function App() {
   if (!workflowId) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-4 py-8">
-        <span className="wordmark" style={{ fontSize: 40 }}>RevertX</span>
+        <div className="text-3xl">🛡️ Aegis</div>
 
         <TriggerPanel onLaunched={(wid) => connect(wid)} />
 
@@ -507,7 +511,10 @@ export default function App() {
             onChange={(e) => setInputId(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && connect()}
           />
-          <button className="ledger-btn primary" onClick={() => connect()}>
+          <button
+            className="bg-[var(--blue)] text-black font-semibold px-4 py-2 rounded text-sm hover:opacity-90"
+            onClick={() => connect()}
+          >
             Connect
           </button>
         </div>
@@ -539,6 +546,7 @@ export default function App() {
             </div>
           </div>
         )}
+        {showIntro && <IntroSequence onComplete={finishIntro} />}
       </div>
     );
   }
@@ -639,6 +647,7 @@ export default function App() {
       )}
 
       {endState && <EndStatePanel data={endState} onClose={() => setEndState(null)} />}
+      {showIntro && <IntroSequence onComplete={finishIntro} />}
     </div>
   );
 }
