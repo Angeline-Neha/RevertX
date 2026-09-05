@@ -1,0 +1,145 @@
+diff --git a/proxy/mcp_proxy.py b/proxy/mcp_proxy.py
+index bf85e05..84b21e1 100644
+--- a/proxy/mcp_proxy.py
++++ b/proxy/mcp_proxy.py
+@@ -41,12 +41,22 @@ from state_log.redis_client import (
+ import db.client as db
+ from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
+ from authorization.trace import authorize
++from razorpayx.client import create_payout
+ 
+ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+ REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
+ PROXY_API_KEY = os.getenv("PROXY_API_KEY", "test-key-123")
+ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+ 
++# merchant_id sentinel for a REAL RazorpayX test-mode payout, as opposed to
++# the mock_merchants/registry.py entries (which are locally-launched FastAPI
++# stand-ins). Not added to registry.py itself — that registry's contract is
++# specifically "a launchable mock server with a port/module", which this
++# isn't.
++RZP_MERCHANT_ID = "merchant_rzp"
++RZP_FUND_ACCOUNT_ID = os.getenv("RZP_DEMO_FUND_ACCOUNT_ID")
++RZP_PAYEE_NAME = os.getenv("RZP_PAYEE_NAME", "RazorpayX Live Payout")
++
+ # MERCHANT_URLS / MERCHANT_PAYEES now come from mock_merchants/registry.py —
+ # the single source of truth shared with compensating_agent/graph.py and the
+ # process-launch scripts. Do not redeclare them here.
+@@ -153,7 +163,10 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
+         return JSONResponse(content=cached_db)
+ 
+     amount: float = float(expected_data.get("amount", 0))
+-    payee: str = expected_data.get("payee", MERCHANT_PAYEES.get(merchant_id, "Unknown"))
++    payee: str = expected_data.get(
++        "payee",
++        RZP_PAYEE_NAME if merchant_id == RZP_MERCHANT_ID else MERCHANT_PAYEES.get(merchant_id, "Unknown"),
++    )
+     item: str = expected_data.get("item", "")
+     currency: str = expected_data.get("currency", "INR")
+ 
+@@ -225,32 +238,81 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
+             **raw_response,
+         })
+ 
+-    # 3. Forward to Merchant
+-    base_url = MERCHANT_URLS.get(merchant_id)
+-    if not base_url:
+-        await db.rollback_budget(wid, amount)
+-        await async_redis.aclose()
+-        return JSONResponse(status_code=404, content={"error": f"Unknown merchant: {merchant_id}"})
++    # 3. Forward to Merchant — either a real RazorpayX test-mode payout
++    # (merchant_rzp) or the existing mock-merchant HTTP forward. Both paths
++    # converge on the same merchant_data/status_code shape so everything
++    # below (budget commit, transaction log, reconciliation) is untouched.
++    if merchant_id == RZP_MERCHANT_ID:
++        if not RZP_FUND_ACCOUNT_ID:
++            await db.rollback_budget(wid, amount)
++            await async_redis.aclose()
++            return JSONResponse(status_code=500, content={
++                "error": "RZP_DEMO_FUND_ACCOUNT_ID not set — run `python -m razorpayx.provision` first.",
++            })
+ 
+-    publish_event(wid, "payment_attempt", {
+-        "merchant_id": merchant_id, "amount": amount, "payee": payee, "item": item
+-    })
++        publish_event(wid, "payment_attempt", {
++            "merchant_id": merchant_id, "amount": amount, "payee": payee, "item": item
++        })
+ 
+-    try:
+-        async with httpx.AsyncClient(timeout=8.0) as http_client:
+-            resp = await http_client.post(f"{base_url}/charge", json={
+-                "amount": amount, "item": item, "workflow_id": wid
+-            })
+-        merchant_data = resp.json()
+-        status_code = resp.status_code
+-    except httpx.TimeoutException:
+-        merchant_data = {"error_type": "timeout"}
+-        status_code = 408
+-    except Exception as exc:
+-        merchant_data = {"error": str(exc)}
+-        status_code = 503
+-
+-    raw_response = {**merchant_data, "status_code": status_code}
++        try:
++            payout = await create_payout(
++                fund_account_id=RZP_FUND_ACCOUNT_ID,
++                amount_paise=int(round(amount * 100)),
++                purpose="payout",
++                mode="UPI",
++                reference_id=idem_key,
++                narration=item or "RevertX payout",
++            )
++            rzp_status = payout.get("status")
++            # Test-mode payouts commonly sit at queued/processing and never
++            # auto-advance to processed — that's still a committed payout,
++            # not a failure (see razorpayx/provision.py). Only
++            # rejected/cancelled/reversed/failed mean the money didn't move.
++            settled = rzp_status in ("queued", "processing", "processed")
++            merchant_data = {
++                "status": "settled" if settled else "failed",
++                "amount": amount,
++                "payee": payee,
++                "settlement_ref": payout.get("id", ""),
++                "razorpayx_status": rzp_status,
++                "razorpayx_payout_id": payout.get("id"),
++            }
++            status_code = 200
++        except httpx.HTTPStatusError as exc:
++            merchant_data = {"error_type": "razorpayx_rejected", "detail": exc.response.text}
++            status_code = exc.response.status_code
++        except Exception as exc:
++            merchant_data = {"error_type": "razorpayx_error", "error": str(exc)}
++            status_code = 503
++
++        raw_response = {**merchant_data, "status_code": status_code}
++
++    else:
++        base_url = MERCHANT_URLS.get(merchant_id)
++        if not base_url:
++            await db.rollback_budget(wid, amount)
++            await async_redis.aclose()
++            return JSONResponse(status_code=404, content={"error": f"Unknown merchant: {merchant_id}"})
++
++        publish_event(wid, "payment_attempt", {
++            "merchant_id": merchant_id, "amount": amount, "payee": payee, "item": item
++        })
++
++        try:
++            async with httpx.AsyncClient(timeout=8.0) as http_client:
++                resp = await http_client.post(f"{base_url}/charge", json={
++                    "amount": amount, "item": item, "workflow_id": wid
++                })
++            merchant_data = resp.json()
++            status_code = resp.status_code
++        except httpx.TimeoutException:
++            merchant_data = {"error_type": "timeout"}
++            status_code = 408
++        except Exception as exc:
++            merchant_data = {"error": str(exc)}
++            status_code = 503
++
++        raw_response = {**merchant_data, "status_code": status_code}
+ 
+     if status_code == 200:
+         actual_status = merchant_data.get("status", "failed")

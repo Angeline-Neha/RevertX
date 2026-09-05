@@ -50,7 +50,16 @@ async def authorize(
          "spent_today": wallet.spent_today, "remaining_today": wallet.remaining_today},
     )
     if not can_spend:
-        emit("final_decision", "block", reason)
+        # Structured, not just a prose reason — dashboard renders these as
+        # a clean "requested vs authority" banner rather than parsing text.
+        emit("final_decision", "block", reason, {
+            "block_source": "wallet",
+            "requested_amount": amount,
+            "per_txn_limit": wallet.per_txn_limit,
+            "daily_limit": wallet.daily_limit,
+            "remaining_today": wallet.remaining_today,
+            "financial_action": "payout not attempted",
+        })
         return {"decision": "BLOCK", "trace_id": trace_id, "steps": steps}
 
     policy_results = evaluate(amount=amount, category=category, recipient_id=recipient_id, config=config)
@@ -58,8 +67,13 @@ async def authorize(
         emit(r.check, "pass" if r.passed else "fail", r.detail)
 
     if not all_passed(policy_results):
-        failed = next(r.detail for r in policy_results if not r.passed)
-        emit("final_decision", "block", failed)
+        failed_check = next(r for r in policy_results if not r.passed)
+        emit("final_decision", "block", failed_check.detail, {
+            "block_source": "policy",
+            "failed_check": failed_check.check,
+            "requested_amount": amount,
+            "financial_action": "payout not attempted",
+        })
         return {"decision": "BLOCK", "trace_id": trace_id, "steps": steps}
 
     emit("final_decision", "allow", "all checks passed")

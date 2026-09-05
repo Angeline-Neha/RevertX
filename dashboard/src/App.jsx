@@ -345,6 +345,25 @@ export default function App() {
         });
         break;
 
+      // Agent Wallet / policy authorization ran BEFORE any payment attempt
+      // (mcp_proxy.py, before reserve_budget). Distinct from
+      // mandate_exceeded: no merchant/payment_attempt event ever fires
+      // here, so there's no per-merchant box to update — this is a clean,
+      // global dead-end. No compensation: nothing was paid, so there's
+      // nothing to recover.
+      case "authorization_trace": {
+        const { step, status, detail } = data;
+        log(`  [Auth:${step}] ${status}${detail ? ` — ${detail}` : ""}`);
+        if (step === "final_decision" && status === "block") {
+          setEndState({
+            type: "authorization_blocked",
+            label: "Authorization BLOCKED — payout not attempted",
+            payload: data,
+          });
+        }
+        break;
+      }
+
       default:
         break;
     }

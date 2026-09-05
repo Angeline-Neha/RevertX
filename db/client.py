@@ -115,6 +115,17 @@ async def run_migrations() -> None:
                 last_reset DATE NOT NULL DEFAULT CURRENT_DATE
             );
         """)
+        # One-time bump: rows created under the old hardcoded 5000/20000
+        # defaults before WALLET_DEFAULT_* existed would otherwise sit
+        # below the new default forever (ON CONFLICT DO NOTHING in
+        # fetch_wallet only sets defaults on first insert). Only touches
+        # rows still exactly at the old default — a deliberately
+        # customized wallet is left alone.
+        await conn.execute("""
+            UPDATE agent_wallet
+            SET per_txn_limit = $1, daily_limit = $2
+            WHERE per_txn_limit = 5000.0 AND daily_limit = 20000.0
+        """, WALLET_DEFAULT_PER_TXN, WALLET_DEFAULT_DAILY)
     finally:
         await conn.close()
 
@@ -378,7 +389,18 @@ async def reset_circuit_breaker(merchant_id: str):
         await conn.execute("UPDATE circuit_breakers SET failures = 0, state = 'closed' WHERE merchant_id = $1", merchant_id)
 
 
-async def fetch_wallet(agent_id: str, default_per_txn: float = 5000.0, default_daily: float = 20000.0) -> dict:
+# Demo-realistic defaults (were hardcoded at 5000/20000 — too low for the
+# ₹22k budget / ₹10k-₹20k per-payment demo scenarios). Overridable per
+# deployment via env so this doesn't need another code change to retune.
+WALLET_DEFAULT_PER_TXN = float(os.getenv("WALLET_DEFAULT_PER_TXN", "25000"))
+WALLET_DEFAULT_DAILY = float(os.getenv("WALLET_DEFAULT_DAILY", "75000"))
+
+
+async def fetch_wallet(
+    agent_id: str,
+    default_per_txn: float = WALLET_DEFAULT_PER_TXN,
+    default_daily: float = WALLET_DEFAULT_DAILY,
+) -> dict:
     """Creates a wallet row with defaults on first use so callers never
     have to provision it separately before checking authority."""
     async with pool.acquire() as conn:

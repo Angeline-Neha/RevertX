@@ -41,6 +41,9 @@ from state_log.redis_client import (
 import db.client as db
 from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
 from authorization.trace import authorize
+from razorpayx.client import create_payout
+
+RZP_DEMO_FUND_ACCOUNT_ID = os.getenv("RZP_DEMO_FUND_ACCOUNT_ID")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
@@ -225,30 +228,60 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
             **raw_response,
         })
 
-    # 3. Forward to Merchant
-    base_url = MERCHANT_URLS.get(merchant_id)
-    if not base_url:
-        await db.rollback_budget(wid, amount)
-        await async_redis.aclose()
-        return JSONResponse(status_code=404, content={"error": f"Unknown merchant: {merchant_id}"})
-
+    # 3. Forward to Merchant (real RazorpayX payout for merchant_rzp, mock HTTP otherwise)
     publish_event(wid, "payment_attempt", {
         "merchant_id": merchant_id, "amount": amount, "payee": payee, "item": item
     })
 
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as http_client:
-            resp = await http_client.post(f"{base_url}/charge", json={
-                "amount": amount, "item": item, "workflow_id": wid
-            })
-        merchant_data = resp.json()
-        status_code = resp.status_code
-    except httpx.TimeoutException:
-        merchant_data = {"error_type": "timeout"}
-        status_code = 408
-    except Exception as exc:
-        merchant_data = {"error": str(exc)}
-        status_code = 503
+    if merchant_id == "merchant_rzp":
+        # Real RazorpayX Test Mode payout — same response shape (status/
+        # amount/payee/settlement_ref) as a mock merchant's /charge, so
+        # every downstream step (budget commit, reconciliation, dashboard
+        # events) works unchanged regardless of which path ran.
+        try:
+            payout = await create_payout(
+                fund_account_id=RZP_DEMO_FUND_ACCOUNT_ID,
+                amount_paise=int(amount * 100),
+                purpose="payout",
+                reference_id=wid,
+                narration=item[:30] if item else "Aegis payout",
+            )
+            # queued/processing are real, accepted payouts in test mode —
+            # see razorpayx/provision.py's note. Only reversed/rejected/
+            # cancelled count as failed.
+            rzp_status = payout.get("status", "")
+            merchant_data = {
+                "status": "settled" if rzp_status in ("queued", "processing", "processed") else "failed",
+                "amount": payout.get("amount", 0) / 100.0,
+                "payee": payee,
+                "settlement_ref": payout.get("id", ""),
+                "razorpay_status": rzp_status,
+                "utr": payout.get("utr"),
+            }
+            status_code = 200
+        except Exception as exc:
+            merchant_data = {"error": str(exc)}
+            status_code = 502
+    else:
+        base_url = MERCHANT_URLS.get(merchant_id)
+        if not base_url:
+            await db.rollback_budget(wid, amount)
+            await async_redis.aclose()
+            return JSONResponse(status_code=404, content={"error": f"Unknown merchant: {merchant_id}"})
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as http_client:
+                resp = await http_client.post(f"{base_url}/charge", json={
+                    "amount": amount, "item": item, "workflow_id": wid
+                })
+            merchant_data = resp.json()
+            status_code = resp.status_code
+        except httpx.TimeoutException:
+            merchant_data = {"error_type": "timeout"}
+            status_code = 408
+        except Exception as exc:
+            merchant_data = {"error": str(exc)}
+            status_code = 503
 
     raw_response = {**merchant_data, "status_code": status_code}
 

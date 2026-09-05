@@ -5,6 +5,7 @@ import "react-json-view-lite/dist/index.css";
 export default function EndStatePanel({ data, onClose }) {
   if (!data) return null;
   const isUdir = data.type === "udir_payload";
+  const isAuthBlocked = data.type === "authorization_blocked";
 
   return (
     <AnimatePresence>
@@ -19,14 +20,14 @@ export default function EndStatePanel({ data, onClose }) {
         {/* Header */}
         <div
           className="px-4 py-3 flex items-start justify-between border-b"
-          style={{ borderColor: isUdir ? "#58a6ff" : "#3fb950" }}
+          style={{ borderColor: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950" }}
         >
           <div>
             <div
               className="text-xs font-bold uppercase tracking-wider mb-1"
-              style={{ color: isUdir ? "#58a6ff" : "#3fb950" }}
+              style={{ color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950" }}
             >
-              {isUdir ? "Network-Fault Detected" : "Agent-Fault Detected"}
+              {isAuthBlocked ? "Authorization Blocked" : isUdir ? "Network-Fault Detected" : "Agent-Fault Detected"}
             </div>
             <div className="text-sm font-semibold text-white">{data.label}</div>
           </div>
@@ -43,12 +44,16 @@ export default function EndStatePanel({ data, onClose }) {
           <span
             className="text-xs px-2 py-1 rounded font-semibold"
             style={{
-              background: isUdir ? "rgba(88,166,255,0.15)" : "rgba(63,185,80,0.15)",
-              color: isUdir ? "#58a6ff" : "#3fb950",
-              border: `1px solid ${isUdir ? "#58a6ff" : "#3fb950"}`,
+              background: isAuthBlocked ? "rgba(210,153,34,0.15)" : isUdir ? "rgba(88,166,255,0.15)" : "rgba(63,185,80,0.15)",
+              color: isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950",
+              border: `1px solid ${isAuthBlocked ? "#d29922" : isUdir ? "#58a6ff" : "#3fb950"}`,
             }}
           >
-            {isUdir ? "UDIR Payload — ready for NPCI" : "Internal Liability Report — no dispute filed"}
+            {isAuthBlocked
+              ? "Agent Wallet / Policy — never attempted, not a fault"
+              : isUdir
+              ? "UDIR Payload — ready for NPCI"
+              : "Internal Liability Report — no dispute filed"}
           </span>
         </div>
 
@@ -78,7 +83,15 @@ export default function EndStatePanel({ data, onClose }) {
         </div>
 
         {/* Safety note */}
-        {!isUdir && (
+        {isAuthBlocked && (
+          <div
+            className="mx-4 mb-4 rounded px-3 py-2 text-xs"
+            style={{ background: "rgba(210,153,34,0.1)", border: "1px solid #d29922", color: "#d29922" }}
+          >
+            ⛔ No payout attempted — nothing was paid, so there is nothing for Aegis to compensate.
+          </div>
+        )}
+        {!isAuthBlocked && !isUdir && (
           <div
             className="mx-4 mb-4 rounded px-3 py-2 text-xs"
             style={{ background: "rgba(63,185,80,0.1)", border: "1px solid #3fb950", color: "#3fb950" }}
@@ -86,7 +99,7 @@ export default function EndStatePanel({ data, onClose }) {
             ✓ No UDIR complaint filed — fault is agent logic, not a merchant or network failure.
           </div>
         )}
-        {isUdir && (
+        {!isAuthBlocked && isUdir && (
           <div
             className="mx-4 mb-4 rounded px-3 py-2 text-xs"
             style={{ background: "rgba(88,166,255,0.1)", border: "1px solid #58a6ff", color: "#58a6ff" }}
