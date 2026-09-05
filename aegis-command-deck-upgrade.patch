@@ -1,0 +1,170 @@
+diff --git a/dashboard/src/components/TopBar.jsx b/dashboard/src/components/TopBar.jsx
+index addb2c5..93267b3 100644
+--- a/dashboard/src/components/TopBar.jsx
++++ b/dashboard/src/components/TopBar.jsx
+@@ -2,9 +2,16 @@ import { useState, useEffect } from "react";
+ import BeforeAfterToggle from "./BeforeAfterToggle.jsx";
+ import PolicyDrawer from "./PolicyDrawer.jsx";
+ 
+-// Ledger redesign masthead + hero strip — wired to real data, no canned
+-// animation. Budget/connected/liveWalletState all come straight from
+-// App.jsx's WebSocket event handling, same as the previous TopBar.
++function Telemetry({ label, value, tone = "cyan" }) {
++  return (
++    <div className={`telemetry telemetry-${tone}`}>
++      <span className="telemetry-led" />
++      <span className="telemetry-label">{label}</span>
++      <strong>{value}</strong>
++    </div>
++  );
++}
++
+ export default function TopBar({ workflowId, budget, connected, onNewRun, liveWalletState }) {
+   const [drawerOpen, setDrawerOpen] = useState(false);
+   const [rzpBalance, setRzpBalance] = useState(null);
+@@ -18,79 +25,31 @@ export default function TopBar({ workflowId, budget, connected, onNewRun, liveWa
+ 
+   const pct = budget.limit > 0 ? (budget.used / budget.limit) * 100 : 0;
+   const gaugeClass = pct > 85 ? "danger" : pct > 60 ? "warn" : "";
++  const remaining = liveWalletState?.remaining_today;
++  const dailyLimit = liveWalletState?.daily_limit || 75000;
+ 
+   return (
+     <>
+-      <div className="masthead command-masthead" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24, padding: "12px 16px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
+-        <div>
+-          <div className="brand-lockup" style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+-            <span className="wordmark">RevertX</span>
+-            <span className={`live-pill ${connected ? "" : "off"}`}>
+-              <span className="live-dot" />{connected ? "live" : "disconnected"}
+-            </span>
+-          </div>
+-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+-            fault-isolated saga orchestrator · <span style={{ fontFamily: "var(--mono)" }}>{workflowId}</span>
+-          </div>
+-        </div>
+-        <div className="command-actions" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+-          <BeforeAfterToggle />
+-          <button className="ledger-btn" onClick={() => setDrawerOpen(true)}>policy</button>
+-          {onNewRun && (
+-            <button className="ledger-btn primary" onClick={onNewRun}>new run</button>
+-          )}
++      <header className="command-header">
++        <div className="command-brand">
++          <div className="brand-eyebrow"><span className="status-orb" /> AEGIS / AUTONOMOUS RECOVERY NETWORK</div>
++          <div className="brand-row"><span className="wordmark">RevertX</span><span className={`live-pill ${connected ? "" : "off"}`}><span className="live-dot" />{connected ? "live link" : "offline"}</span></div>
++          <div className="workflow-id">RUN // {(workflowId || "awaiting workflow").toUpperCase()}</div>
+         </div>
+-      </div>
+-
+-      <div className="hero-strip">
+-        <div className="hero-figure">
+-          <div className="label">RazorpayX wallet available</div>
+-          <div className="amount">
+-            <span className="rupee">₹</span>
+-            {rzpBalance !== null ? rzpBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+-          </div>
+-          {liveWalletState && (
+-            <div className="sub">per-transaction limit ₹{liveWalletState.per_txn_limit?.toLocaleString("en-IN")}</div>
+-          )}
++        <div className="header-telemetry">
++          <Telemetry label="PROXY" value={connected ? "ONLINE" : "WAIT"} tone={connected ? "green" : "warn"} />
++          <Telemetry label="STREAM" value={connected ? "OPEN" : "CLOSED"} tone={connected ? "cyan" : "warn"} />
++          <Telemetry label="AEGIS" value="ARMED" tone="purple" />
+         </div>
+-
+-        <div className="gauge-block">
+-          <div className="gauge-top">
+-            <span>budget used, this workflow</span>
+-            <strong>₹{budget.used.toLocaleString("en-IN")} / ₹{budget.limit.toLocaleString("en-IN")}</strong>
+-          </div>
+-          <div className="gauge-track">
+-            <div className={`gauge-fill ${gaugeClass}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+-          </div>
+-        </div>
+-
+-        <div className="wallet-card-wrap">
+-          <div className="wallet-card">
+-            <div className="wc-row-top">
+-              <div className="wc-chip" />
+-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.6">
+-                <path d="M8.5 15.5a5 5 0 0 1 0-7" />
+-                <path d="M5.5 18.5a9 9 0 0 1 0-13" />
+-              </svg>
+-            </div>
+-            <div className="wc-number">•••• •••• •••• {(workflowId || "0000").slice(-4).padStart(4, "0")}</div>
+-            <div className="wc-row-bottom">
+-              <div>
+-                <div className="wc-label">agent</div>
+-                <div className="wc-value">{liveWalletState?.agent_id || "primary_agent"}</div>
+-              </div>
+-              <div>
+-                <div className="wc-label">status</div>
+-                <div className={`wc-value ${connected ? "live" : "off"}`}>
+-                  {connected && <span className="dot" />}{connected ? "live" : "offline"}
+-                </div>
+-              </div>
+-            </div>
+-            <div className="wc-brand">RevertX</div>
+-          </div>
+-        </div>
+-      </div>
+-
++        <div className="command-actions"><BeforeAfterToggle /><button className="ledger-btn" onClick={() => setDrawerOpen(true)}>policy <span className="button-key">P</span></button>{onNewRun && <button className="ledger-btn primary" onClick={onNewRun}>new run <span className="button-key">↗</span></button>}</div>
++      </header>
++
++      <section className="telemetry-deck">
++        <div className="balance-module"><div className="module-kicker">RAZORPAYX / AVAILABLE BALANCE</div><div className="balance-value"><span>₹</span>{rzpBalance !== null ? rzpBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</div><div className="module-foot">LIVE ACCOUNT SNAPSHOT <i /></div></div>
++        <div className="authority-module"><div className="module-kicker">AGENT AUTHORITY / DAILY WINDOW</div><div className="authority-row"><strong>₹{(remaining ?? dailyLimit).toLocaleString("en-IN")}</strong><span>remaining</span></div><div className="authority-track"><span style={{ width: `${Math.min(remaining != null ? (remaining / dailyLimit) * 100 : 100, 100)}%` }} /></div><div className="module-foot">PER TXN ≤ ₹{(liveWalletState?.per_txn_limit ?? 25000).toLocaleString("en-IN")}</div></div>
++        <div className="mandate-module"><div className="module-kicker">WORKFLOW MANDATE / CURRENT RUN</div><div className="mandate-row"><strong>₹{budget.used.toLocaleString("en-IN")}</strong><span>/ ₹{budget.limit.toLocaleString("en-IN")}</span></div><div className="gauge-track"><div className={`gauge-fill ${gaugeClass}`} style={{ width: `${Math.min(pct, 100)}%` }} /></div><div className="module-foot">{pct >= 100 ? "LIMIT REACHED" : `${Math.round(pct)}% COMMITTED`}</div></div>
++        <div className="wallet-card-wrap"><div className="wallet-card"><div className="wc-row-top"><div className="wc-chip" /><span className="card-signal">◉)))</span></div><div className="wc-number">•••• •••• •••• {(workflowId || "0000").slice(-4).padStart(4, "0")}</div><div className="wc-row-bottom"><div><div className="wc-label">AGENT</div><div className="wc-value">{liveWalletState?.agent_id || "primary_agent"}</div></div><div><div className="wc-label">LINK</div><div className={`wc-value ${connected ? "live" : "off"}`}>{connected ? "SECURE" : "OFFLINE"}</div></div></div><div className="wc-brand">RevertX / 01</div></div></div>
++      </section>
+       <PolicyDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} walletState={liveWalletState} />
+     </>
+   );
+diff --git a/dashboard/src/index.css b/dashboard/src/index.css
+index 749137a..e7322c6 100644
+--- a/dashboard/src/index.css
++++ b/dashboard/src/index.css
+@@ -338,3 +338,41 @@ body::after {
+ @media (prefers-reduced-motion: reduce) {
+   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+ }
++
++
++/* FULL COMMAND-DECK COMPOSITION */
++.command-header { display:grid; grid-template-columns: 1.25fr auto auto; align-items:center; gap:24px; padding:16px 20px 14px; min-height:88px; position:relative; background:linear-gradient(115deg,#111a2d 0%,#0b1221 58%,#15102b 100%); border-bottom:1px solid var(--deck-line); box-shadow:0 12px 40px rgba(0,0,0,.28); }
++.command-header::before { content:""; position:absolute; left:20px; right:20px; bottom:0; height:1px; background:linear-gradient(90deg,var(--deck-cyan),transparent 30%,transparent 70%,var(--deck-purple)); opacity:.8; }
++.command-brand { min-width:0; }
++.brand-eyebrow,.module-kicker { color:var(--deck-cyan); font:9px var(--mono); letter-spacing:.16em; text-transform:uppercase; opacity:.72; }
++.brand-eyebrow { display:flex; gap:7px; align-items:center; margin-bottom:4px; }
++.status-orb { width:6px; height:6px; background:var(--deck-cyan); border-radius:50%; box-shadow:0 0 10px var(--deck-cyan); animation:livepulse 1.8s infinite; }
++.brand-row { display:flex; align-items:baseline; gap:12px; }
++.brand-row .wordmark { font-size:34px; line-height:1; }
++.workflow-id { color:var(--text-muted); font:10px var(--mono); letter-spacing:.1em; margin-top:7px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
++.header-telemetry { display:flex; gap:8px; }
++.telemetry { display:grid; grid-template-columns:auto 1fr; column-gap:7px; min-width:76px; padding:8px 9px; border:1px solid rgba(87,214,255,.12); background:rgba(3,8,18,.38); }
++.telemetry-led { grid-row:span 2; align-self:center; width:6px; height:6px; background:var(--deck-cyan); box-shadow:0 0 9px currentColor; border-radius:50%; }
++.telemetry-label { color:var(--text-muted); font:8px var(--mono); letter-spacing:.14em; }
++.telemetry strong { color:var(--deck-cyan); font:10px var(--mono); letter-spacing:.08em; }
++.telemetry-green .telemetry-led,.telemetry-green strong { color:var(--green); background:var(--green); }
++.telemetry-warn .telemetry-led,.telemetry-warn strong { color:var(--blue); background:var(--blue); }
++.telemetry-purple .telemetry-led,.telemetry-purple strong { color:var(--deck-purple); background:var(--deck-purple); }
++.button-key { color:var(--deck-cyan); opacity:.65; margin-left:6px; }
++.telemetry-deck { display:grid; grid-template-columns:1.05fr 1.25fr 1.25fr 250px; gap:1px; background:var(--deck-line); border-bottom:1px solid var(--deck-line); }
++.telemetry-deck > * { min-height:122px; padding:18px 20px; background:linear-gradient(145deg,rgba(19,30,51,.98),rgba(10,16,29,.98)); }
++.module-kicker { margin-bottom:13px; }
++.balance-value { color:var(--text-primary); font:600 28px var(--serif); letter-spacing:.01em; text-shadow:0 0 20px rgba(240,209,156,.18); }
++.balance-value span { color:var(--blue); margin-right:3px; }
++.module-foot { color:var(--text-muted-2); font:8px var(--mono); letter-spacing:.12em; margin-top:10px; }
++.module-foot i { display:inline-block; width:5px; height:5px; background:var(--green); border-radius:50%; margin-left:4px; box-shadow:0 0 8px var(--green); }
++.authority-row,.mandate-row { display:flex; align-items:baseline; gap:8px; color:var(--text-muted); }
++.authority-row strong,.mandate-row strong { color:var(--text-primary); font:600 23px var(--mono); }
++.authority-row span,.mandate-row span { font:10px var(--mono); }
++.authority-track { height:4px; margin-top:12px; background:#080d18; }
++.authority-track span { display:block; height:100%; background:linear-gradient(90deg,var(--deck-cyan),var(--deck-purple)); box-shadow:0 0 10px rgba(87,214,255,.35); transition:width .7s ease; }
++.telemetry-deck .wallet-card-wrap { padding:0; min-height:122px; }
++.telemetry-deck .wallet-card { width:100%; height:100%; aspect-ratio:auto; border:0; border-left:1px solid rgba(87,214,255,.22); border-radius:0; box-shadow:none; background:radial-gradient(130% 150% at 100% 0%,#303967 0%,transparent 55%),linear-gradient(155deg,#202b47,#101622); }
++.card-signal { color:var(--deck-cyan); font:12px var(--mono); opacity:.8; }
++@media (max-width:1100px) { .command-header { grid-template-columns:1fr auto; } .header-telemetry { display:none; } .telemetry-deck { grid-template-columns:1fr 1fr 250px; } .balance-module { display:none; } }
++@media (max-width:760px) { .command-header { grid-template-columns:1fr; gap:12px; } .command-actions { justify-content:flex-start; } .telemetry-deck { grid-template-columns:1fr 1fr; } .telemetry-deck .wallet-card-wrap { grid-column:span 2; min-height:140px; } }
