@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RevertX — ledger view</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:      #10141d;
+    --surface:  #161d2c;
+    --raised:   #1c2436;
+    --raised-2: #212a40;
+    --line:     #2a3349;
+    --line-soft: #202939;
+    --paper:    #ece7db;
+    --paper-dim:#b9b3a2;
+    --muted:    #7c8399;
+    --muted-2:  #565e74;
+    --gold:     #dba955;
+    --gold-2:   #f0d19c;
+    --gold-soft: #dba95522;
+    --green:    #5fb489;
+    --green-soft: #5fb48922;
+    --coral:    #e3654c;
+    --coral-soft: #e3654c22;
+    --violet:   #8b93f0;
+    --violet-soft: #8b93f022;
+
+    --serif: 'Fraunces', 'Iowan Old Style', serif;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+
+    --radius: 3px;
+  }
+
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; padding:0; }
+
+  body{
+    background: var(--ink);
+    background-image:
+      radial-gradient(circle at 1px 1px, rgba(255,255,255,0.035) 1px, transparent 0);
+    background-size: 28px 28px;
+    color: var(--paper);
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.55;
+    min-height: 100vh;
+    padding: 28px;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    *, *::before, *::after{ animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  }
+
+  a{ color: inherit; }
+  :focus-visible{ outline: 2px solid var(--gold); outline-offset: 2px; }
+
+  .frame{ max-width: 1360px; margin: 0 auto; }
+
+  /* ---------------- header ---------------- */
+
+  .masthead{
+    display:flex; align-items:flex-end; justify-content:space-between;
+    gap: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--line);
+    flex-wrap: wrap;
+  }
+
+  .wordmark-row{ display:flex; align-items:baseline; gap: 14px; }
+
+  .wordmark{
+    font-family: var(--serif);
+    font-weight: 700;
+    font-size: 40px;
+    letter-spacing: -0.015em;
+    font-variation-settings: "opsz" 60;
+    background: linear-gradient(120deg, var(--gold-2) 0%, var(--paper) 55%, var(--paper-dim) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+
+  .tagline{ color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+
+  .live-pill{
+    display:inline-flex; align-items:center; gap:6px;
+    font-size: 11.5px; color: var(--green);
+    border: 1px solid var(--green-soft); background: var(--green-soft);
+    padding: 3px 9px 3px 7px; border-radius: 20px;
+  }
+  .live-dot{
+    width:6px; height:6px; border-radius:50%; background: var(--green);
+    box-shadow: 0 0 0 0 rgba(95,180,137,0.6); animation: livepulse 2s infinite;
+  }
+  @keyframes livepulse{
+    0%{ box-shadow: 0 0 0 0 rgba(95,180,137,0.5); }
+    70%{ box-shadow: 0 0 0 6px rgba(95,180,137,0); }
+    100%{ box-shadow: 0 0 0 0 rgba(95,180,137,0); }
+  }
+
+  .head-controls{ display:flex; align-items:center; gap: 10px; }
+
+  .ledger-btn{
+    font-family: var(--mono); font-size: 12px; color: var(--paper);
+    background: var(--raised); border: 1px solid var(--line);
+    padding: 8px 14px; border-radius: var(--radius); cursor: pointer;
+    transition: border-color .15s ease, transform .1s ease, background .15s ease;
+  }
+  .ledger-btn:hover{ border-color: var(--muted-2); background: var(--raised-2); }
+  .ledger-btn:active{ transform: translateY(1px); }
+  .ledger-btn.primary{ background: var(--gold); border-color: var(--gold); color: #1a1508; font-weight: 600; }
+  .ledger-btn.primary:hover{ background: #e8bb6c; }
+  .ledger-btn.danger-outline{ border-color: var(--coral-soft); color: #f0a291; }
+  .ledger-btn.danger-outline:hover{ border-color: var(--coral); background: var(--coral-soft); }
+  .ledger-btn:disabled{ opacity: .4; cursor: not-allowed; transform:none; }
+
+  .toggle{ display:inline-flex; align-items:center; gap:8px; font-size: 12px; color: var(--muted); }
+  .switch{ width: 34px; height: 19px; border-radius: 20px; background: var(--green); position: relative; cursor:pointer; border: none; }
+  .switch::after{ content:''; position:absolute; width:14px;height:14px; border-radius:50%; background:#0d1119; top:2.5px; left: 17px; transition: left .15s ease; }
+  .switch.off{ background: var(--line); }
+  .switch.off::after{ left: 2.5px; }
+
+  /* ---------------- hero ---------------- */
+  .hero-strip{
+    display:grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 36px; align-items:center;
+    padding: 22px 0 24px; border-bottom: 1px solid var(--line);
+  }
+  @media (max-width: 900px){ .hero-strip{ grid-template-columns: 1fr; } }
+
+  .hero-figure .label{ font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .hero-figure .amount{
+    font-family: var(--serif); font-variation-settings: "opsz" 30; font-weight: 600;
+    font-size: 42px; color: var(--paper); font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+  }
+  .hero-figure .amount .rupee{ color: var(--gold); }
+  .hero-figure .sub{ font-size: 11px; color: var(--muted-2); margin-top: 3px; }
+
+  .gauge-block{ min-width: 240px; }
+  .gauge-top{ display:flex; justify-content:space-between; align-items:baseline; font-size: 11.5px; color: var(--muted); margin-bottom: 7px; }
+  .gauge-top strong{ color: var(--paper); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .gauge-track{ height: 6px; border-radius: 20px; background: var(--raised); border: 1px solid var(--line); overflow: hidden; }
+  .gauge-fill{ height: 100%; border-radius: 20px; background: linear-gradient(90deg, var(--green), var(--gold)); width: 0%; transition: width 1.1s cubic-bezier(.2,.8,.2,1), background .4s ease; }
+  .gauge-fill.warn{ background: linear-gradient(90deg, var(--gold), #e39a4c); }
+  .gauge-fill.danger{ background: linear-gradient(90deg, var(--coral), #b3402c); }
+
+  /* ---- wallet card (the "atm card" component) ---- */
+  .wallet-card{
+    width: 300px; aspect-ratio: 1.586;
+    border-radius: 16px;
+    padding: 18px 20px;
+    position: relative; overflow: hidden;
+    background:
+      radial-gradient(120% 140% at 100% 0%, #2c3654 0%, transparent 55%),
+      linear-gradient(155deg, #202a42 0%, #12161f 70%);
+    border: 1px solid #313c58;
+    box-shadow: 0 20px 40px -12px rgba(0,0,0,0.55);
+    transform-style: preserve-3d;
+    transition: transform .15s ease;
+    cursor: pointer;
+    display:flex; flex-direction:column; justify-content:space-between;
+  }
+  .wallet-card::before{
+    content:'';
+    position:absolute; inset:0;
+    background-image: repeating-linear-gradient(115deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 1px, transparent 1px, transparent 34px);
+    pointer-events:none;
+  }
+  .wc-glare{
+    position:absolute; inset:-40%;
+    background: radial-gradient(circle at var(--gx,50%) var(--gy,20%), rgba(255,255,255,0.16), transparent 42%);
+    pointer-events:none; transition: opacity .2s ease; opacity: 0;
+  }
+  .wallet-card:hover .wc-glare{ opacity: 1; }
+
+  .wc-row-top{ display:flex; align-items:flex-start; justify-content:space-between; }
+  .wc-chip{
+    width: 34px; height: 26px; border-radius: 5px;
+    background: linear-gradient(145deg, var(--gold-2), var(--gold) 60%, #a9793a);
+    position: relative;
+  }
+  .wc-chip::before, .wc-chip::after{
+    content:''; position:absolute; background: rgba(0,0,0,0.25);
+  }
+  .wc-chip::before{ left:50%; top:2px; bottom:2px; width:1px; transform: translateX(-50%); }
+  .wc-chip::after{ top:50%; left:2px; right:2px; height:1px; transform: translateY(-50%); }
+  .wc-wave{ color: var(--muted); opacity: .8; }
+
+  .wc-number{
+    font-family: var(--mono); font-size: 16.5px; letter-spacing: 0.09em;
+    color: var(--paper); font-weight: 500; margin: 14px 0 2px;
+  }
+
+  .wc-row-bottom{ display:flex; justify-content:space-between; align-items:flex-end; }
+  .wc-label{ font-size: 9px; color: var(--muted); margin-bottom: 3px; }
+  .wc-value{ font-size: 12.5px; color: var(--paper-dim); font-weight: 500; }
+  .wc-value.live{ color: var(--green); }
+  .wc-value.live .dot{ display:inline-block; width:5px; height:5px; border-radius:50%; background: var(--green); margin-right:5px; animation: livepulse 2s infinite; }
+
+  .wc-brand{
+    position: absolute; right: 18px; bottom: 16px;
+    font-family: var(--serif); font-weight: 700; font-style: italic; font-size: 15px;
+    color: var(--gold-2); opacity: 0.9;
+  }
+
+  .card-caption{ text-align:center; font-size: 10.5px; color: var(--muted-2); margin-top: 8px; }
+
+  /* ---------------- board ---------------- */
+  .board{ display:grid; grid-template-columns: 300px 1fr 300px; gap: 1px; background: var(--line); margin-top: 1px; min-height: 460px; }
+  @media (max-width: 980px){ .board{ grid-template-columns: 1fr; } }
+
+  .panel{ background: var(--surface); display:flex; flex-direction:column; }
+  .panel-head{ display:flex; align-items:center; gap:8px; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+  .panel-head .dot{ width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+  .panel-head .title{ flex:1; }
+  .panel-head .dim{ color: var(--muted-2); }
+
+  /* ---- trace log ---- */
+  .trace{ padding: 6px 0; overflow-y:auto; flex:1; }
+  .entry{
+    position: relative; display:flex; gap: 12px; padding: 12px 16px 12px 14px;
+    border-left: 2px solid transparent; opacity: 0.25; transform: translateX(-4px);
+    transition: opacity .35s ease, transform .35s ease, border-color .35s ease, background .35s ease;
+  }
+  .entry.seen{ opacity: 1; transform: translateX(0); }
+  .entry.active{ border-left-color: var(--gold); background: rgba(219,169,85,0.05); }
+  .entry.is-pass{ border-left-color: var(--green); }
+  .entry.is-fail{ border-left-color: var(--coral); background: rgba(227,101,76,0.06); }
+  .entry .n{ font-size: 10.5px; color: var(--muted-2); padding-top: 2px; width: 14px; flex-shrink:0; }
+  .entry .body{ flex:1; min-width:0; }
+  .entry .step{ color: var(--paper); font-size: 12.5px; font-weight: 500; }
+  .entry .detail{ color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .entry .detail em{ color: var(--paper-dim); font-style: normal; }
+
+  .stamp{
+    display:inline-flex; align-items:center; gap:4px; font-size: 10px; letter-spacing: 0.02em;
+    padding: 2px 7px; border-radius: 3px; border: 1px solid transparent;
+    opacity: 0; transform: scale(1.5) rotate(-6deg); flex-shrink: 0; height: fit-content; margin-top: 1px;
+  }
+  .stamp.show{ animation: stampland .32s cubic-bezier(.2,1.4,.4,1) forwards; }
+  @keyframes stampland{
+    0%{ opacity:0; transform: scale(1.6) rotate(-10deg); }
+    60%{ opacity:1; transform: scale(0.92) rotate(2deg); }
+    100%{ opacity:1; transform: scale(1) rotate(-2deg); }
+  }
+  .stamp.pass{ color: var(--green); border-color: var(--green-soft); background: var(--green-soft); }
+  .stamp.fail{ color: #f0a291; border-color: var(--coral-soft); background: var(--coral-soft); }
+  .stamp.wait{ color: var(--muted); border-color: var(--line); }
+
+  /* ---- workflow graph (plain HTML nodes + SVG edges, no foreignObject) ---- */
+  .graph-wrap{ position:relative; flex:1; min-height: 380px; padding: 16px; }
+  .graph-canvas{ position:relative; width:100%; aspect-ratio: 640 / 400; }
+
+  .graph-empty{
+    position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap: 10px; text-align:center; padding: 20px; color: var(--muted-2); transition: opacity .3s ease; z-index: 3;
+  }
+  .graph-empty svg{ opacity: 0.5; }
+  .graph-empty .ghost-title{ font-family: var(--serif); font-size: 16px; color: var(--muted); font-weight: 500; }
+  .graph-empty .ghost-sub{ font-size: 11.5px; max-width: 260px; }
+  .graph-empty.hidden{ opacity:0; pointer-events:none; }
+
+  svg.graph-edges{ position:absolute; inset:0; width:100%; height:100%; z-index:1; }
+
+  .g-node{
+    position:absolute; z-index:2;
+    background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 13px; font-family: var(--mono);
+    opacity: 0; transform: translateY(6px) scale(.97);
+    transition: opacity .3s ease, transform .3s ease, border-color .3s ease;
+  }
+  .g-node.in{ opacity:1; transform: translateY(0) scale(1); }
+  .g-node.settled{ border-color: var(--green-soft); }
+  .g-node.blocked{ border-color: var(--coral); animation: shake .38s ease; }
+  .g-node.dispute{ border-color: #8b93f055; }
+  .g-node .name{ font-size: 12.5px; color: var(--paper); font-weight: 500; }
+  .g-node .amt{ font-size: 11px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .g-node .tag{ font-size: 9.5px; margin-top: 5px; display:inline-block; padding: 1px 6px; border-radius:3px; color: var(--muted); background: var(--line-soft); }
+  .g-node.settled .tag{ color: var(--green); background: var(--green-soft); }
+  .g-node.blocked .tag{ color: #f0a291; background: var(--coral-soft); }
+  .g-node.dispute .tag{ color: var(--violet); background: var(--violet-soft); }
+
+  @keyframes shake{
+    0%,100%{ transform: translateX(0); } 20%{ transform: translateX(-3px); } 40%{ transform: translateX(3px); }
+    60%{ transform: translateX(-2px); } 80%{ transform: translateX(2px); }
+  }
+
+  .edge-line{ fill:none; stroke: var(--line); stroke-width: 1.4; stroke-dasharray: 480; stroke-dashoffset: 480; transition: stroke-dashoffset 0.9s ease, stroke .3s ease; }
+  .edge-line.drawn{ stroke-dashoffset: 0; }
+  .edge-line.ok{ stroke: var(--green-soft); }
+  .edge-line.blocked-edge{ stroke: var(--coral); stroke-dasharray: 5 5; stroke-dashoffset:0; }
+  .edge-line.reverse{ stroke: var(--violet); stroke-dasharray: 5 5; stroke-dashoffset:0; }
+
+  .coin{ r: 4.5; fill: var(--gold); opacity: 0; }
+  .center-label{ text-anchor:middle; font-family: var(--mono); font-size: 10px; fill: var(--muted-2); }
+
+  /* ---- reasoning / math rail ---- */
+  .stream-box{ padding: 14px 16px; flex: 1; }
+  .stream-text{ font-family: var(--serif); font-style: italic; font-size: 14.5px; color: var(--paper-dim); line-height: 1.6; min-height: 92px; }
+  .stream-text .cursor{ display:inline-block; width: 2px; height: 14px; background: var(--gold); margin-left: 2px; vertical-align: -2px; animation: blink 0.9s step-end infinite; }
+  @keyframes blink{ 50%{ opacity: 0; } }
+  .stream-text .placeholder{ color: var(--muted-2); font-style: italic; }
+
+  .math-box{ border-top: 1px solid var(--line); padding: 14px 16px 16px; }
+  .math-line{ font-size: 12px; color: var(--muted); margin-bottom: 6px; opacity: 0; transform: translateY(3px); transition: opacity .3s ease, transform .3s ease; }
+  .math-line.in{ opacity:1; transform:none; }
+  .math-line .k{ color: var(--paper-dim); }
+  .math-line .v{ color: var(--gold); font-variant-numeric: tabular-nums; }
+
+  /* ---------------- footer ledger strip ---------------- */
+  .receipt{ display:grid; grid-template-columns: repeat(5, 1fr); border: 1px solid var(--line); border-top: none; }
+  @media (max-width: 780px){ .receipt{ grid-template-columns: repeat(2, 1fr); } }
+  .receipt-cell{ padding: 16px 18px; border-right: 1px dashed var(--line-soft); border-top: 1px dashed var(--line-soft); }
+  .receipt-cell:last-child{ border-right:none; }
+  .receipt-cell .label{ font-size: 10.5px; color: var(--muted); margin-bottom: 8px; }
+  .receipt-cell .value{ font-family: var(--serif); font-weight: 600; font-size: 24px; color: var(--paper); font-variant-numeric: tabular-nums; }
+  .receipt-cell .value.green{ color: var(--green); }
+  .receipt-cell .value.gold{ color: var(--gold); }
+  .receipt-cell .value.coral{ color: var(--coral); }
+  .receipt-cell .spark{ margin-top: 8px; height: 22px; }
+  .receipt-cell .spark path{ fill:none; stroke: var(--green); stroke-width: 1.5; stroke-dasharray: 200; stroke-dashoffset: 200; transition: stroke-dashoffset 1.4s ease .3s; }
+  .receipt-cell .spark.drawn path{ stroke-dashoffset: 0; }
+
+  .ev-pop{
+    position: absolute; z-index: 60; background: #0d111a; border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 12px; font-size: 11px; color: var(--paper-dim); white-space: pre; max-width: 320px;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.45); opacity: 0; pointer-events:none; transform: translateY(4px);
+    transition: opacity .15s ease, transform .15s ease;
+  }
+  .ev-pop.show{ opacity:1; transform:none; pointer-events:auto; }
+
+  .flash-overlay{ position: fixed; inset:0; background: var(--coral); opacity: 0; pointer-events:none; z-index: 50; mix-blend-mode: soft-light; }
+  .flash-overlay.go{ animation: flashfade .5s ease; }
+  @keyframes flashfade{ 0%{ opacity: 0.55; } 100%{ opacity: 0; } }
+
+  .foot-note{ text-align:center; color: var(--muted-2); font-size: 11px; margin-top: 22px; padding-bottom: 8px; }
+  .foot-note kbd{ font-family: var(--mono); background: var(--raised); border:1px solid var(--line); border-radius:3px; padding:1px 5px; font-size: 10.5px; }
+
+  /* ---------------- policy drawer ---------------- */
+  .backdrop{
+    position: fixed; inset:0; background: rgba(8,10,15,0.6); backdrop-filter: blur(2px);
+    opacity: 0; pointer-events:none; transition: opacity .25s ease; z-index: 70;
+  }
+  .backdrop.open{ opacity: 1; pointer-events:auto; }
+
+  .drawer{
+    position: fixed; top:0; right:0; height:100%; width: min(460px, 92vw);
+    background: var(--surface); border-left: 1px solid var(--line);
+    transform: translateX(100%); transition: transform .3s cubic-bezier(.2,.8,.2,1);
+    z-index: 71; display:flex; flex-direction:column; overflow-y:auto;
+  }
+  .drawer.open{ transform: translateX(0); }
+  .drawer-head{
+    padding: 20px 22px 16px; border-bottom: 1px solid var(--line);
+    display:flex; align-items:flex-start; justify-content:space-between; gap: 12px;
+  }
+  .drawer-head h2{ font-family: var(--serif); font-weight: 600; font-size: 22px; margin: 0 0 4px; color: var(--paper); }
+  .drawer-head p{ margin:0; font-size: 12px; color: var(--muted); }
+  .drawer-close{ background: none; border: 1px solid var(--line); color: var(--muted); border-radius: var(--radius); width: 28px; height:28px; cursor:pointer; flex-shrink:0; }
+  .drawer-close:hover{ color: var(--paper); border-color: var(--muted-2); }
+
+  .drawer-section{ padding: 18px 22px; border-bottom: 1px solid var(--line-soft); }
+  .drawer-section h3{
+    font-family: var(--mono); font-size: 11.5px; font-weight: 600; color: var(--gold);
+    margin: 0 0 4px; display:flex; align-items:center; gap:7px;
+  }
+  .drawer-section .desc{ font-size: 11.5px; color: var(--muted); margin: 0 0 12px; line-height:1.55; }
+
+  .kv-row{ display:flex; justify-content:space-between; align-items:baseline; padding: 7px 0; border-top: 1px dashed var(--line-soft); font-size: 12px; }
+  .kv-row:first-of-type{ border-top:none; }
+  .kv-row .k{ color: var(--paper-dim); }
+  .kv-row .v{ color: var(--paper); font-variant-numeric: tabular-nums; font-weight: 500; }
+
+  .tier-row{ display:flex; justify-content:space-between; padding: 8px 0; border-top: 1px dashed var(--line-soft); font-size: 12px; }
+  .tier-row:first-of-type{ border-top:none; }
+  .tier-name{ color: var(--paper-dim); }
+  .tier-name .badge{ display:inline-block; margin-left:6px; font-size:9.5px; color: var(--muted-2); }
+  .tier-cap{ color: var(--gold); font-variant-numeric: tabular-nums; font-weight:500; }
+
+  .deny-item{ display:flex; justify-content:space-between; gap:10px; padding: 8px 0; border-top: 1px dashed var(--line-soft); font-size: 12px; }
+  .deny-item:first-of-type{ border-top:none; }
+  .deny-item .who{ color: var(--paper-dim); }
+  .deny-item .why{ color: var(--muted-2); font-size: 10.5px; margin-top: 2px; }
+  .deny-item .when{ color: var(--muted-2); font-size: 10.5px; white-space:nowrap; }
+
+  .code-block{
+    font-family: var(--mono); font-size: 11px; color: var(--paper-dim);
+    background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 12px 14px; white-space: pre; overflow-x:auto; line-height:1.6;
+  }
+  .code-block .k2{ color: var(--violet); }
+  .code-block .v2{ color: var(--gold); }
+  .fine-note{ font-size: 10.5px; color: var(--muted-2); margin-top: 8px; line-height:1.5; }
+</style>
+</head>
+<body>
+
+<div class="flash-overlay" id="flash"></div>
+
+<div class="frame">
+
+  <div class="masthead">
+    <div>
+      <div class="wordmark-row">
+        <span class="wordmark">RevertX</span>
+        <span class="live-pill"><span class="live-dot"></span>live</span>
+      </div>
+      <div class="tagline">fault-isolated saga orchestrator · native UPI reconciliation</div>
+    </div>
+    <div class="head-controls">
+      <span class="toggle"><button class="switch" id="revertxSwitch" aria-pressed="true" aria-label="Toggle RevertX"></button> revertx on</span>
+      <button class="ledger-btn" id="policyBtn">policy</button>
+      <button class="ledger-btn danger-outline" id="breakBtn">trigger silent break</button>
+      <button class="ledger-btn primary" id="runBtn">run scenario</button>
+    </div>
+  </div>
+
+  <div class="hero-strip">
+    <div class="hero-figure">
+      <div class="label">RazorpayX wallet available</div>
+      <div class="amount"><span class="rupee">₹</span><span id="walletAmt">61,916.40</span></div>
+      <div class="sub">per-transaction limit ₹25,000</div>
+    </div>
+
+    <div class="gauge-block">
+      <div class="gauge-top"><span>budget used today</span><strong id="gaugeLabel">₹50,000 / ₹75,000</strong></div>
+      <div class="gauge-track"><div class="gauge-fill" id="gaugeFill"></div></div>
+    </div>
+
+    <div>
+      <div class="wallet-card" id="walletCard">
+        <div class="wc-glare" id="wcGlare"></div>
+        <div class="wc-row-top">
+          <div class="wc-chip"></div>
+          <svg class="wc-wave" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M8.5 15.5a5 5 0 0 1 0-7"/>
+            <path d="M5.5 18.5a9 9 0 0 1 0-13"/>
+          </svg>
+        </div>
+        <div class="wc-number">•••• •••• •••• 8420</div>
+        <div class="wc-row-bottom">
+          <div>
+            <div class="wc-label">agent</div>
+            <div class="wc-value">Procurement Agent</div>
+          </div>
+          <div>
+            <div class="wc-label">status</div>
+            <div class="wc-value live"><span class="dot"></span>live</div>
+          </div>
+        </div>
+        <div class="wc-brand">RevertX</div>
+      </div>
+      <div class="card-caption">agent-linked wallet card · tilts on hover</div>
+    </div>
+  </div>
+
+  <div class="board">
+
+    <section class="panel">
+      <div class="panel-head"><span class="dot" style="background:var(--gold)"></span><span class="title">Trace log</span><span class="dim" id="traceCount">0 / 5</span></div>
+      <div class="trace" id="trace"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><span class="dot" style="background:var(--violet)"></span><span class="title">Workflow</span><span class="dim">2 nodes</span></div>
+      <div class="graph-wrap">
+        <div class="graph-empty" id="graphEmpty">
+          <svg width="120" height="70" viewBox="0 0 120 70" fill="none">
+            <rect x="4" y="26" width="30" height="18" rx="2" stroke="#3a4460" stroke-dasharray="3 3"/>
+            <rect x="86" y="4" width="30" height="18" rx="2" stroke="#3a4460" stroke-dasharray="3 3"/>
+            <rect x="86" y="48" width="30" height="18" rx="2" stroke="#3a4460" stroke-dasharray="3 3"/>
+            <path d="M34 35 L86 13" stroke="#3a4460" stroke-dasharray="3 3"/>
+            <path d="M34 35 L86 57" stroke="#3a4460" stroke-dasharray="3 3"/>
+          </svg>
+          <div class="ghost-title">no run in progress</div>
+          <div class="ghost-sub">press <strong style="color:var(--muted)">run scenario</strong> to send a payment through the saga and watch it live</div>
+        </div>
+
+        <div class="graph-canvas" id="graphCanvas">
+          <svg class="graph-edges" viewBox="0 0 640 400" preserveAspectRatio="none">
+            <path id="edgeA" class="edge-line" d="M 170 200 C 280 200, 280 95, 400 95" />
+            <path id="edgeB" class="edge-line" d="M 170 200 C 280 200, 280 305, 400 305" />
+            <text class="center-label" x="230" y="215">primary agent</text>
+            <circle class="coin" id="coinA" cx="170" cy="200"></circle>
+            <circle class="coin" id="coinB" cx="170" cy="200"></circle>
+          </svg>
+
+          <div class="g-node" id="nodeSrc" style="left:3.1%; top:41.25%; width:23.4%;">
+            <div class="name">Procurement agent</div>
+            <div class="amt">₹22,000 requested</div>
+          </div>
+
+          <div class="g-node" id="nodeA" style="left:62.5%; top:13.75%; width:26.5%;">
+            <div class="name">Domain Registrar</div>
+            <div class="amt">₹12,000</div>
+            <span class="tag">pending</span>
+          </div>
+
+          <div class="g-node" id="nodeB" style="left:62.5%; top:66.25%; width:26.5%;">
+            <div class="name">CRM Corp</div>
+            <div class="amt">₹10,000</div>
+            <span class="tag">pending</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><span class="dot" style="background:var(--muted)"></span><span class="title">Reasoning</span><span class="dim">token stream</span></div>
+      <div class="stream-box">
+        <div class="stream-text" id="streamText"><span class="placeholder">waiting for a run…</span></div>
+      </div>
+      <div class="math-box">
+        <div class="panel-head" style="padding:0 0 10px; border:none;"><span class="title">Deterministic math</span><span class="dim">no LLM here</span></div>
+        <div id="mathLines"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="receipt">
+    <div class="receipt-cell">
+      <div class="label">auto-recovered, this session</div>
+      <div class="value" id="recoveredVal">₹0</div>
+    </div>
+    <div class="receipt-cell">
+      <div class="label">match rate</div>
+      <div class="value green">100.0%</div>
+      <svg class="spark" id="spark1" viewBox="0 0 200 22" preserveAspectRatio="none"><path d="M0 18 L20 16 L40 17 L60 12 L80 13 L100 8 L120 9 L140 5 L160 6 L180 3 L200 4"/></svg>
+    </div>
+    <div class="receipt-cell">
+      <div class="label">mismatch detection</div>
+      <div class="value gold">100.0%</div>
+    </div>
+    <div class="receipt-cell">
+      <div class="label">false-dispute rate — must be 0.0%</div>
+      <div class="value" id="disputeVal">0.0%</div>
+    </div>
+    <div class="receipt-cell">
+      <div class="label">records, batch eval</div>
+      <div class="value">51</div>
+    </div>
+  </div>
+
+  <div class="foot-note">static visual mockup — <kbd>run scenario</kbd> plays the blocked-payment story, <kbd>trigger silent break</kbd> plays the reconciliation-dispute story, <kbd>policy</kbd> opens the live policy sheet</div>
+
+</div>
+
+<div class="ev-pop" id="evPop"></div>
+
+<div class="backdrop" id="backdrop"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div>
+      <h2>Wallet policy</h2>
+      <p>what governs every payout before it's attempted — read-only, editable by a human reviewer only</p>
+    </div>
+    <button class="drawer-close" id="drawerClose" aria-label="Close">✕</button>
+  </div>
+
+  <div class="drawer-section">
+    <h3>Spend limits</h3>
+    <p class="desc">Hard ceilings enforced before any transfer leaves the wallet.</p>
+    <div class="kv-row"><span class="k">Per-transaction cap</span><span class="v">₹25,000</span></div>
+    <div class="kv-row"><span class="k">Daily budget</span><span class="v">₹75,000</span></div>
+    <div class="kv-row"><span class="k">Used today</span><span class="v">₹50,000</span></div>
+    <div class="kv-row"><span class="k">Remaining today</span><span class="v">₹25,000</span></div>
+  </div>
+
+  <div class="drawer-section">
+    <h3>Approval thresholds by vendor tier</h3>
+    <p class="desc">A payout above its tier's ceiling is blocked pre-flight and routed for manual approval instead of failing silently.</p>
+    <div class="tier-row"><span class="tier-name">Tier 1 <span class="badge">verified, 6+ months</span></span><span class="tier-cap">₹15,000</span></div>
+    <div class="tier-row"><span class="tier-name">Tier 2 <span class="badge">standard vendor</span></span><span class="tier-cap">₹9,500</span></div>
+    <div class="tier-row"><span class="tier-name">Tier 3 <span class="badge">new / unverified</span></span><span class="tier-cap">₹2,000</span></div>
+  </div>
+
+  <div class="drawer-section">
+    <h3>Recipient denylist</h3>
+    <p class="desc">3 recipients currently blocked. Any match here fails the payout regardless of amount.</p>
+    <div class="deny-item">
+      <div><div class="who">Nimbus Cloudworks</div><div class="why">repeated chargeback pattern</div></div>
+      <div class="when">12d ago</div>
+    </div>
+    <div class="deny-item">
+      <div><div class="who">Quickstay Rentals</div><div class="why">manual freeze — finance review</div></div>
+      <div class="when">4d ago</div>
+    </div>
+    <div class="deny-item">
+      <div><div class="who">Vertex Print Co.</div><div class="why">bank account mismatch on file</div></div>
+      <div class="when">just now</div>
+    </div>
+  </div>
+
+  <div class="drawer-section">
+    <h3>Merchant policy extraction</h3>
+    <p class="desc">An isolated, single-purpose model reads a merchant's plain-English cancellation policy and extracts structured terms only — it never computes a ₹ figure itself.</p>
+    <div class="code-block">{
+  <span class="k2">"merchant"</span>: "Flex-Stay Hotels",
+  <span class="k2">"refundable"</span>: <span class="v2">true</span>,
+  <span class="k2">"penalty_percentage"</span>: <span class="v2">12</span>,
+  <span class="k2">"conditions"</span>: "cancel ≥72h before check-in"
+}</div>
+    <div class="fine-note">Refund ₹ amount is computed by plain Python from these fields — fails safe to <span style="color:var(--paper-dim)">refundable: false</span> on any parse error.</div>
+  </div>
+
+  <div class="drawer-section">
+    <h3>Anomaly review</h3>
+    <p class="desc">A second isolated model flags statistically unusual compensation patterns for a human to look at later. It is advisory-only — nothing here ever gates a refund, a dispute, or a liability report.</p>
+    <div class="kv-row"><span class="k">Flagged this week</span><span class="v">2</span></div>
+    <div class="kv-row"><span class="k">Blocks issued by this service</span><span class="v">0</span></div>
+  </div>
+
+  <div class="drawer-section" style="border-bottom:none;">
+    <h3>False-dispute tolerance</h3>
+    <p class="desc">Filing a dispute for a fault that was actually the agent's own mistake spams the network. This must stay at zero.</p>
+    <div class="kv-row"><span class="k">Current session</span><span class="v" style="color:var(--green)">0.0%</span></div>
+    <div class="kv-row"><span class="k">Last 51-record batch eval</span><span class="v" style="color:var(--green)">0.0%</span></div>
+  </div>
+</aside>
+
+<script>
+(function(){
+  const $ = (s)=>document.querySelector(s);
+  const $$ = (s)=>document.querySelectorAll(s);
+
+  const runBtn = $('#runBtn');
+  const breakBtn = $('#breakBtn');
+  const trace = $('#trace');
+  const traceCount = $('#traceCount');
+  const graphEmpty = $('#graphEmpty');
+  const streamText = $('#streamText');
+  const mathLines = $('#mathLines');
+  const walletAmt = $('#walletAmt');
+  const gaugeFill = $('#gaugeFill');
+  const gaugeLabel = $('#gaugeLabel');
+  const flash = $('#flash');
+  const recoveredVal = $('#recoveredVal');
+  const disputeVal = $('#disputeVal');
+  const nodeSrc = $('#nodeSrc');
+
+  let busy = false;
+  let wallet = 61916.40;
+  let budgetUsed = 50000;
+  const budgetTotal = 75000;
+
+  function fmt(n){ return n.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+
+  function animateNumber(el, from, to, ms, prefix){
+    prefix = prefix || '';
+    const start = performance.now();
+    function tick(now){
+      const p = Math.min(1, (now-start)/ms);
+      const eased = 1 - Math.pow(1-p, 3);
+      el.textContent = prefix + fmt(from + (to-from)*eased);
+      if(p < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function setGauge(used){
+    const pct = Math.min(100, (used/budgetTotal)*100);
+    gaugeFill.style.width = pct + '%';
+    gaugeFill.classList.remove('warn','danger');
+    if(pct > 85) gaugeFill.classList.add('danger');
+    else if(pct > 60) gaugeFill.classList.add('warn');
+    gaugeLabel.textContent = `₹${Math.round(used).toLocaleString('en-IN')} / ₹${budgetTotal.toLocaleString('en-IN')}`;
+  }
+  setGauge(budgetUsed);
+
+  function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+  const STEPS = [
+    { step:'parse_intent', detail:'₹22,000 vendor payment split across 2 merchants, category <em>vendor_payment</em>', state:'pass' },
+    { step:'check_wallet_authority', detail:'within per-transaction limit of ₹25,000; ₹61,916.40 remaining today', state:'pass' },
+    { step:'check_category', detail:'vendor_payment is an allowed category', state:'pass' },
+    { step:'check_recipient_denylist', detail:'neither recipient is on the denylist', state:'pass' },
+    { step:'check_approval_threshold', detail:'₹10,000 to CRM Corp exceeds the ₹9,500 threshold for this vendor tier', state:'fail' },
+  ];
+
+  function resetBoard(){
+    trace.innerHTML = '';
+    traceCount.textContent = '0 / 5';
+    streamText.innerHTML = '<span class="placeholder">waiting for a run…</span>';
+    mathLines.innerHTML = '';
+    graphEmpty.classList.remove('hidden');
+    nodeSrc.classList.remove('in');
+    ['nodeA','nodeB'].forEach(id=>{
+      const n = $('#'+id);
+      n.className = 'g-node';
+      n.querySelector('.tag').textContent = 'pending';
+    });
+    ['edgeA','edgeB'].forEach(id=>{
+      $('#'+id).classList.remove('drawn','ok','blocked-edge','reverse');
+    });
+  }
+
+  function addTraceEntry({step, detail, state}, idx){
+    const div = document.createElement('div');
+    div.className = 'entry';
+    div.innerHTML = `
+      <div class="n">${String(idx+1).padStart(2,'0')}</div>
+      <div class="body">
+        <div class="step">${step}</div>
+        <div class="detail">${detail}</div>
+      </div>
+      <div class="stamp wait">···</div>
+    `;
+    trace.appendChild(div);
+    requestAnimationFrame(()=> div.classList.add('seen','active'));
+    return div;
+  }
+
+  function resolveEntry(div, state){
+    div.classList.remove('active');
+    div.classList.add(state === 'pass' ? 'is-pass' : 'is-fail');
+    const stamp = div.querySelector('.stamp');
+    stamp.classList.remove('wait');
+    stamp.classList.add(state, 'show');
+    stamp.textContent = state === 'pass' ? 'pass' : 'fail';
+  }
+
+  async function typeStream(text){
+    streamText.innerHTML = '';
+    const span = document.createElement('span');
+    streamText.appendChild(span);
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    streamText.appendChild(cursor);
+    for(let i=0;i<text.length;i++){ span.textContent += text[i]; await sleep(14); }
+  }
+
+  function addMathLine(k, v){
+    const div = document.createElement('div');
+    div.className = 'math-line';
+    div.innerHTML = `<span class="k">${k}</span> <span class="v">${v}</span>`;
+    mathLines.appendChild(div);
+    requestAnimationFrame(()=>div.classList.add('in'));
+  }
+
+  async function flyCoin(coinId, edgeId, ms){
+    const coin = $('#'+coinId);
+    const path = $('#'+edgeId);
+    const len = path.getTotalLength();
+    coin.style.opacity = '1';
+    const start = performance.now();
+    return new Promise(resolve=>{
+      function tick(now){
+        const p = Math.min(1, (now-start)/ms);
+        const pt = path.getPointAtLength(p*len);
+        coin.setAttribute('cx', pt.x); coin.setAttribute('cy', pt.y);
+        if(p < 1){ requestAnimationFrame(tick); } else { resolve(); }
+      }
+      requestAnimationFrame(tick);
+    });
+  }
+
+  async function runScenario(){
+    if(busy) return;
+    busy = true; runBtn.disabled = true; breakBtn.disabled = true;
+    resetBoard();
+    await sleep(150);
+    graphEmpty.classList.add('hidden');
+    nodeSrc.classList.add('in');
+
+    for(let i=0;i<STEPS.length;i++){
+      const entry = addTraceEntry(STEPS[i], i);
+      traceCount.textContent = `${i+1} / 5`;
+      await sleep(420);
+      resolveEntry(entry, STEPS[i].state);
+
+      if(i === 1){
+        $('#edgeA').classList.add('drawn');
+        $('#nodeA').classList.add('in');
+        await flyCoin('coinA','edgeA', 750);
+        $('#nodeA').classList.add('settled');
+        $('#nodeA').querySelector('.tag').textContent = 'settled';
+        $('#edgeA').classList.add('ok');
+        $('#coinA').style.opacity = '0';
+        animateNumber(walletAmt, wallet, wallet-12000, 700);
+        wallet -= 12000;
+        budgetUsed += 12000;
+        setGauge(budgetUsed);
+      }
+
+      if(i === 3){
+        $('#edgeB').classList.add('drawn');
+        $('#nodeB').classList.add('in');
+        flyCoin('coinB','edgeB', 900);
+      }
+
+      if(i === 4 && STEPS[i].state === 'fail'){
+        await sleep(250);
+        $('#coinB').style.opacity = '0';
+        $('#nodeB').classList.add('blocked');
+        $('#nodeB').querySelector('.tag').textContent = 'blocked';
+        $('#edgeB').classList.remove('drawn','ok');
+        $('#edgeB').classList.add('blocked-edge');
+        typeStream('Cross-checking the vendor tier against the per-merchant approval threshold before any transfer clears — ₹10,000 to CRM Corp sits above the ceiling for this category, so the payout never leaves the wallet.');
+        addMathLine('threshold for this vendor tier:', '₹9,500');
+        await sleep(500);
+        addMathLine('requested transfer:', '₹10,000');
+        await sleep(400);
+        addMathLine('payout attempted:', 'no — blocked pre-flight');
+      }
+    }
+    busy = false; runBtn.disabled = false; breakBtn.disabled = false;
+  }
+
+  async function runSilentBreak(){
+    if(busy) return;
+    busy = true; runBtn.disabled = true; breakBtn.disabled = true;
+    resetBoard();
+    await sleep(150);
+    graphEmpty.classList.add('hidden');
+    nodeSrc.classList.add('in');
+
+    const steps = [
+      { step:'settle_charge', detail:'Merchant C returns HTTP 504 gateway timeout to the caller', state:'pass' },
+      { step:'ledger_reconcile', detail:"Merchant C's internal ledger shows the charge actually settled", state:'fail' },
+      { step:'classify_fault', detail:'expected vs. actual mismatch, deterministic classifier', state:'pass' },
+      { step:'route_dispute', detail:'UDIR-shaped dispute payload generated for the network fault', state:'pass' },
+    ];
+
+    for(let i=0;i<steps.length;i++){
+      const entry = addTraceEntry(steps[i], i);
+      traceCount.textContent = `${i+1} / ${steps.length}`;
+      await sleep(430);
+      resolveEntry(entry, steps[i].state);
+
+      if(i === 0){
+        $('#edgeB').classList.add('drawn');
+        $('#nodeB').classList.add('in');
+        await flyCoin('coinB','edgeB', 700);
+        $('#nodeB').querySelector('.tag').textContent = 'timeout (reported)';
+      }
+      if(i === 1){
+        flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
+        $('#coinB').style.opacity = '0';
+        typeStream("Merchant C reported a timeout, but its own ledger shows the charge cleared — reconciliation catches the mismatch before it reaches the primary agent.");
+      }
+      if(i === 3){
+        $('#nodeB').classList.remove('blocked');
+        $('#nodeB').classList.add('dispute');
+        $('#nodeB').querySelector('.tag').textContent = 'dispute filed';
+        $('#edgeB').classList.remove('blocked-edge');
+        $('#edgeB').classList.add('reverse');
+        addMathLine('fault classification:', 'network_fault');
+        await sleep(400);
+        addMathLine('liability report filed against agent:', 'no');
+        await sleep(400);
+        animateNumber(recoveredVal, 0, 10000, 700, '₹');
+        disputeVal.textContent = '0.0%';
+      }
+    }
+    busy = false; runBtn.disabled = false; breakBtn.disabled = false;
+  }
+
+  runBtn.addEventListener('click', runScenario);
+  breakBtn.addEventListener('click', runSilentBreak);
+
+  const sw = $('#revertxSwitch');
+  sw.addEventListener('click', ()=>{
+    const on = sw.getAttribute('aria-pressed') === 'true';
+    sw.setAttribute('aria-pressed', String(!on));
+    sw.classList.toggle('off', on);
+  });
+
+  window.addEventListener('load', ()=>{
+    setTimeout(()=> $('#spark1').classList.add('drawn'), 300);
+  });
+
+  const evPop = $('#evPop');
+  function bindEvidence(){
+    $$('.g-node').forEach(card=>{
+      card.addEventListener('mouseenter', ()=>{
+        const rect = card.getBoundingClientRect();
+        const state = card.classList.contains('blocked') ? 'blocked_preflight'
+                    : card.classList.contains('dispute') ? 'dispute_filed'
+                    : card.classList.contains('settled') ? 'settled' : 'pending';
+        evPop.textContent = `raw response\n{ "status": "${state}" }`;
+        evPop.style.left = (rect.left + window.scrollX) + 'px';
+        evPop.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        evPop.classList.add('show');
+      });
+      card.addEventListener('mouseleave', ()=> evPop.classList.remove('show'));
+    });
+  }
+  bindEvidence();
+
+  // wallet card tilt + glare
+  const card = $('#walletCard');
+  const glare = $('#wcGlare');
+  card.addEventListener('mousemove', (e)=>{
+    const r = card.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width;
+    const py = (e.clientY - r.top) / r.height;
+    const rx = (py - 0.5) * -12;
+    const ry = (px - 0.5) * 14;
+    card.style.transform = `perspective(700px) rotateX(${rx}deg) rotateY(${ry}deg) translateZ(0)`;
+    glare.style.setProperty('--gx', (px*100) + '%');
+    glare.style.setProperty('--gy', (py*100) + '%');
+  });
+  card.addEventListener('mouseleave', ()=>{
+    card.style.transform = 'perspective(700px) rotateX(0deg) rotateY(0deg)';
+  });
+
+  // policy drawer
+  const drawer = $('#drawer');
+  const backdrop = $('#backdrop');
+  function openDrawer(){ drawer.classList.add('open'); backdrop.classList.add('open'); drawer.setAttribute('aria-hidden','false'); }
+  function closeDrawer(){ drawer.classList.remove('open'); backdrop.classList.remove('open'); drawer.setAttribute('aria-hidden','true'); }
+  $('#policyBtn').addEventListener('click', openDrawer);
+  $('#drawerClose').addEventListener('click', closeDrawer);
+  backdrop.addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', (e)=>{ if(e.key === 'Escape') closeDrawer(); });
+
+})();
+</script>
+
+</body>
+</html>
