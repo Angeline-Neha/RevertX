@@ -1,0 +1,18 @@
+diff --git a/primary_agent/catalog.py b/primary_agent/catalog.py
+index 35f45c3..fec09dc 100644
+--- a/primary_agent/catalog.py
++++ b/primary_agent/catalog.py
+@@ -41,6 +41,13 @@ MERCHANT_CATALOG: list[CatalogEntry] = [
+     CatalogEntry("merchant_e", MERCHANTS["merchant_e"].payee, "print and signage services", 8000.0, "signage printing"),
+     CatalogEntry("merchant_f", MERCHANTS["merchant_f"].payee, "event venue rental, always non-refundable", 25000.0, "venue booking"),
+     CatalogEntry("merchant_g", MERCHANTS["merchant_g"].payee, "event catering", 15000.0, "catering"),
++    # Not in mock_merchants/registry.py — mcp_proxy.py special-cases this id
++    # to fire a REAL RazorpayX test-mode payout instead of forwarding to a
++    # local mock server (see the merchant_id == "merchant_rzp" branch in
++    # proxy/mcp_proxy.py). typical_cost=15000 keeps the LLM's amount band
++    # (±50%) inside both the wallet's per-txn limit and a realistic single
++    # conference-registration-style payment.
++    CatalogEntry("merchant_rzp", "RazorpayX Live Payout", "conference registration or vendor payment made as a real RazorpayX test-mode payout", 15000.0, "conference registration (real payout)"),
+ ]
+ 
+ # Fast lookup by id — planner.py validates every LLM-chosen merchant_id

@@ -243,7 +243,7 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
                 fund_account_id=RZP_DEMO_FUND_ACCOUNT_ID,
                 amount_paise=int(amount * 100),
                 purpose="payout",
-                reference_id=wid,
+                reference_id=idem_key,
                 narration=item[:30] if item else "Aegis payout",
             )
             # queued/processing are real, accepted payouts in test mode —
