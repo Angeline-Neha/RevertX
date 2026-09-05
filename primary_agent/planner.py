@@ -42,6 +42,7 @@ from google.genai import types
 import structlog
 
 from primary_agent.catalog import MERCHANT_CATALOG, CATALOG_BY_ID, catalog_prompt_block
+from state_log.redis_client import publish_event
 
 logger = structlog.get_logger()
 
@@ -176,7 +177,15 @@ def _fallback_plan(budget_limit: float) -> list[PlannedPayment]:
     return plan
 
 
-async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPayment]:
+def _emit(workflow_id: str, event_type: str, data: dict) -> None:
+    """No-op unless a workflow_id is supplied — plan_procurement() is also
+    called from places (tests, one-off scripts) with nothing to publish
+    to."""
+    if workflow_id:
+        publish_event(workflow_id, event_type, data)
+
+
+async def plan_procurement(goal: str, budget_limit: float, workflow_id: str = "") -> list[PlannedPayment]:
     """
     Input: a plain-English goal + a budget limit.
     Output: an ordered list of PlannedPayment, chosen from the catalog and
@@ -184,7 +193,22 @@ async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPaymen
     Falls back to a deterministic plan (see _fallback_plan) rather than
     raising, matching this codebase's existing fail-safe-over-crash
     philosophy for LLM call sites.
+
+    When workflow_id is given, publishes planner_started /
+    planner_plan_generated events (same Redis pub/sub pattern every other
+    node uses — see state_log/redis_client.py) so the dashboard can show
+    that the Gemini call actually happened, and whether the returned plan
+    came from a real LLM response or the deterministic fallback. Before
+    this, nothing about the planning step was ever published — the
+    "Primary Agent Log" panel only ever showed authorization/policy
+    events, so there was no way to tell from the UI whether the planner
+    (or the LLM behind it) had run at all, succeeded, or silently fell
+    back.
     """
+    _emit(workflow_id, "planner_started", {
+        "goal": goal, "budget_limit": budget_limit, "model": PLANNER_MODEL,
+    })
+
     prompt = _PLANNER_PROMPT.format(
         catalog=catalog_prompt_block(),
         max_items=MAX_LINE_ITEMS,
@@ -204,6 +228,11 @@ async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPaymen
             plan = _validate_and_clamp(data)
             if plan:
                 logger.info("planner.plan_generated", goal=goal, line_items=len(plan))
+                _emit(workflow_id, "planner_plan_generated", {
+                    "source": "llm", "model": PLANNER_MODEL,
+                    "line_items": len(plan),
+                    "plan": [p.to_dict() for p in plan],
+                })
                 return plan
 
             # Every item was dropped by guardrails — treat like a parse
@@ -231,4 +260,11 @@ async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPaymen
         "planner.falling_back_to_deterministic_plan",
         goal=goal, last_api_error=str(last_api_exc) if last_api_exc else None,
     )
-    return _fallback_plan(budget_limit)
+    plan = _fallback_plan(budget_limit)
+    _emit(workflow_id, "planner_plan_generated", {
+        "source": "fallback",
+        "reason": str(last_api_exc) if last_api_exc else "no valid line items from the LLM",
+        "line_items": len(plan),
+        "plan": [p.to_dict() for p in plan],
+    })
+    return plan

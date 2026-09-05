@@ -160,6 +160,21 @@ export default function App() {
         log(`Workflow initialised — budget ₹${data.budget_limit.toLocaleString("en-IN")}`);
         break;
 
+      case "planner_started":
+        log(`🧠 Planner: calling ${data.model} for goal "${data.goal}" (budget ₹${data.budget_limit.toLocaleString("en-IN")})`);
+        break;
+
+      case "planner_plan_generated":
+        if (data.source === "llm") {
+          log(`🧠 Planner: ${data.model} returned ${data.line_items} line item(s)`);
+        } else {
+          log(`🧠 Planner: LLM call failed/unusable (${data.reason}) — used deterministic fallback plan instead`);
+        }
+        (data.plan || []).forEach((p) =>
+          log(`    - ${p.merchant_id}: ₹${p.amount.toLocaleString("en-IN")} — ${p.item}`)
+        );
+        break;
+
       case "payment_attempt":
         upsertMerchant(data.merchant_id, data.payee, data.amount);
         log(`→ Paying ${data.merchant_id} — ₹${data.amount.toLocaleString("en-IN")} (${data.item})`);

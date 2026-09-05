@@ -17,7 +17,18 @@ class PolicyConfig:
     allowed_categories: set[str] = field(default_factory=lambda: {"vendor_payment", "conference_registration", "subscription"})
     recipient_allowlist: set[str] | None = None  # None = no allowlist restriction
     recipient_denylist: set[str] = field(default_factory=set)
-    human_approval_threshold: float = 15000.0
+    # Was 15000.0 — lower than several legitimate single-item catalog
+    # amounts (merchant_b/merchant_d hotels ₹20k, merchant_f venue ₹25k),
+    # so this gate was hard-blocking those items ("exceeds the ₹15000.0
+    # auto-approve threshold") before the payment ever reached the
+    # budget-mandate check the demo scenarios are actually designed
+    # around — e.g. Happy path's CRM+hotel could never both succeed, since
+    # the hotel alone always tripped this. Raised to match the Agent
+    # Wallet's own per-txn limit (authorization/wallet.py's WalletState,
+    # currently ₹25,000 in the seeded agent_wallet row) — the wallet is
+    # already the authority on "is a single payment too large", so this
+    # threshold should sit at or above it, not below it.
+    human_approval_threshold: float = 25000.0
 
 
 # Shared singleton — authorize() defaults to this instead of constructing a

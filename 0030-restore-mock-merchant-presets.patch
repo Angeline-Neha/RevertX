@@ -1,0 +1,46 @@
+diff --git a/dashboard/src/components/TriggerPanel.jsx b/dashboard/src/components/TriggerPanel.jsx
+index 2dd8c5c..4327d36 100644
+--- a/dashboard/src/components/TriggerPanel.jsx
++++ b/dashboard/src/components/TriggerPanel.jsx
+@@ -1,16 +1,31 @@
+ import { useState } from "react";
+ 
+ const PRESETS = [
+-  // All four presets now hit the real RazorpayX account via merchant_rzp's
+-  // family of catalog entries (primary_agent/catalog.py) — the old
+-  // mock-merchant presets (Happy path/Flexible hotel/Partial penalty/Event
+-  // launch/Flaky vendor) are removed from this panel. Their backend code
+-  // (mock_merchants/, compensating_agent/graph.py's policy-fetch saga)
+-  // is untouched and still exists — only these dashboard shortcuts changed.
+-  { label: "🟢 Happy Path", goal: "Pay for conference registration as a real payout", budget: 15000 },
+-  { label: "🔴 Insufficient Funds", goal: "Make an insufficient-funds test payout that should be blocked by the real balance check", budget: 15000 },
+-  { label: "🟠 Stuck / Unconfirmed", goal: "Make a reconciliation test payout that should stay pending, not a normal vendor payment", budget: 15000 },
+-  { label: "🔥 Downstream Failure", goal: "Make a downstream-failure test payout to demonstrate saga recovery and a real reversal", budget: 15000 },
++  // True happy path — budget comfortably covers both items (₹30k) so nothing
++  // fails. Useful as the clean "before" baseline to contrast against the
++  // failure-driven presets below.
++  { label: "Happy path", goal: "Book a CRM license and hotel for our offsite", budget: 32000 },
++  // Flexible hotel (₹20k) + catering (₹15k) = ₹35k vs ₹22k budget: hotel
++  // succeeds, catering is rejected, compensation refunds the flexible hotel
++  // under merchant_d's date-threshold policy — a partial/conditional refund
++  // case, distinct from B's hard non-refundable and F's always-non-refundable.
++  { label: "Flexible hotel", goal: "Book a flexible-cancellation hotel and catering for a conference", budget: 22000 },
++  // Domain (₹12k, 10% cancellation penalty) + CRM (₹10k) = ₹22k vs ₹15k
++  // budget: domain succeeds first, CRM is rejected, compensation refunds the
++  // domain registration and must apply the exact 10% penalty math.
++  { label: "Partial penalty", goal: "Register a domain with hosting, then get a CRM license for the team", budget: 15000 },
++  { label: "Event launch", goal: "Book venue and catering for a product launch event", budget: 30000 },
++  // Signage (₹8k) + domain hosting (₹12k) = ₹20k vs ₹12k budget: signage
++  // succeeds first, domain is rejected, compensation must fetch_policy on
++  // the flaky print vendor — the one preset that actually exercises the
++  // intermittent /policy failure it's named for.
++  { label: "Flaky vendor", goal: "Book signage printing for our product launch banner, then register the event's domain and hosting", budget: 12000 },
++  // Phase 6 (Preset 2) — routes to merchant_rzp_pending (catalog.py), a
++  // real RazorpayX payout deterministically forced to stay pending
++  // (RZP_PENDING_DEMO_FORCE) so the payout_unconfirmed/human_escalation_
++  // required/pending_payout_worker.py path (Phase 5) has a one-click,
++  // reliably reproducible trigger instead of hand-typed goal text.
++  { label: "Reconciliation (pending)", goal: "Make a reconciliation test payout that should stay pending, not a normal vendor payment", budget: 15000 },
+ ];
+ 
+ // Fuzzy risk gauge (Feature A) — deliberately qualitative, never the exact

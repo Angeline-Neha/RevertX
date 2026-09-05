@@ -50,8 +50,14 @@ from state_log.redis_client import publish_event
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-RECHECK_INTERVAL_SECONDS = float(os.getenv("PENDING_PAYOUT_RECHECK_INTERVAL_SECONDS", "15"))
-MAX_CHECKS = int(os.getenv("PENDING_PAYOUT_MAX_CHECKS", "8"))
+# Was 15s x 8 = up to ~2 minutes before a demo run gave up and marked a
+# pending payout 'exhausted' — far longer than anyone watching a live demo
+# will wait on one preset. Trimmed to 5s x 3 = ~15s worst case. Still fully
+# overridable via env for anyone who wants the original slower/more
+# patient cadence (e.g. against real RazorpayX test-mode timing that
+# genuinely needs longer to settle).
+RECHECK_INTERVAL_SECONDS = float(os.getenv("PENDING_PAYOUT_RECHECK_INTERVAL_SECONDS", "5"))
+MAX_CHECKS = int(os.getenv("PENDING_PAYOUT_MAX_CHECKS", "3"))
 
 
 async def _write_resolution_step(row: dict, status: str, razorpay_status: str) -> None:

@@ -1,0 +1,514 @@
+diff --git a/.env.example b/.env.example
+index e1f8c84..f6d44cd 100644
+--- a/.env.example
++++ b/.env.example
+@@ -60,12 +60,12 @@ DOWNSTREAM_FORCE_FAIL=true
+ 
+ # --- RazorpayX deterministic insufficient-funds block (Insufficient Funds
+ #     demo preset) ------------------------------------------------------
+-# Read in: authorization/real_balance.py. When true (default),
+-# merchant_rzp_insufficient's real-balance check always blocks, regardless
+-# of the account's actual balance — reliable for a live demo instead of
+-# depending on the account happening to be low on funds. Set to false to
+-# let it check against the real balance like merchant_rzp does.
+-REAL_BALANCE_DEMO_FORCE_INSUFFICIENT=true
++# Read in: authorization/real_balance.py. Default false: checks your real
++# RazorpayX available balance, same as merchant_rzp. Set to true only if
++# you want merchant_rzp_insufficient to always block regardless of actual
++# balance (guaranteed-reproducible demo instead of depending on the
++# account happening to be low on funds).
++REAL_BALANCE_DEMO_FORCE_INSUFFICIENT=false
+ 
+ # --- RazorpayX deterministic pending payout (Phase 6 — Preset 2) -------
+ # Read in: proxy/mcp_proxy.py. When true (default), merchant_rzp_pending
+@@ -78,11 +78,11 @@ RZP_PENDING_DEMO_FORCE=true
+ # Read in: compensating_agent/pending_payout_worker.py. A merchant_rzp
+ # payout that polls to "non_terminal" (Phase 2) gets rechecked this often,
+ # this many times, before the worker gives up and marks it 'exhausted'
+-# (needs a human to check the RazorpayX dashboard directly). Both have
+-# working defaults (15s x 8 = ~2min worst case) — you don't need to set
+-# either.
+-PENDING_PAYOUT_RECHECK_INTERVAL_SECONDS=15
+-PENDING_PAYOUT_MAX_CHECKS=8
++# (needs a human to check the RazorpayX dashboard directly). Defaults
++# tuned for a live demo (5s x 3 = ~15s worst case) — raise these if you
++# want more patience against real RazorpayX test-mode settlement times.
++PENDING_PAYOUT_RECHECK_INTERVAL_SECONDS=5
++PENDING_PAYOUT_MAX_CHECKS=3
+ 
+ # --- CORS -----------------------------------------------------------
+ # Read in: proxy/mcp_proxy.py. Comma-separated list, no spaces.
+diff --git a/authorization/policy.py b/authorization/policy.py
+index 55cdbef..ff9899e 100644
+--- a/authorization/policy.py
++++ b/authorization/policy.py
+@@ -17,7 +17,18 @@ class PolicyConfig:
+     allowed_categories: set[str] = field(default_factory=lambda: {"vendor_payment", "conference_registration", "subscription"})
+     recipient_allowlist: set[str] | None = None  # None = no allowlist restriction
+     recipient_denylist: set[str] = field(default_factory=set)
+-    human_approval_threshold: float = 15000.0
++    # Was 15000.0 — lower than several legitimate single-item catalog
++    # amounts (merchant_b/merchant_d hotels ₹20k, merchant_f venue ₹25k),
++    # so this gate was hard-blocking those items ("exceeds the ₹15000.0
++    # auto-approve threshold") before the payment ever reached the
++    # budget-mandate check the demo scenarios are actually designed
++    # around — e.g. Happy path's CRM+hotel could never both succeed, since
++    # the hotel alone always tripped this. Raised to match the Agent
++    # Wallet's own per-txn limit (authorization/wallet.py's WalletState,
++    # currently ₹25,000 in the seeded agent_wallet row) — the wallet is
++    # already the authority on "is a single payment too large", so this
++    # threshold should sit at or above it, not below it.
++    human_approval_threshold: float = 25000.0
+ 
+ 
+ # Shared singleton — authorize() defaults to this instead of constructing a
+diff --git a/authorization/real_balance.py b/authorization/real_balance.py
+index 74c3178..7323d44 100644
+--- a/authorization/real_balance.py
++++ b/authorization/real_balance.py
+@@ -21,14 +21,19 @@ from dataclasses import dataclass
+ 
+ from razorpayx.client import get_available_balance
+ 
+-# Insufficient Funds demo preset — merchant_rzp_insufficient always blocks
+-# here regardless of the account's actual balance, same reproducibility
+-# reasoning as DOWNSTREAM_FORCE_FAIL (mock_merchants/downstream_service.py)
+-# and RZP_PENDING_DEMO_FORCE. Still fetches the real balance for an honest
+-# event payload (available_balance shown to the dashboard is real), just
+-# doesn't classify off it for this one merchant_id.
++# Insufficient Funds demo preset — merchant_rzp_insufficient CAN be forced
++# to block here regardless of the account's actual balance (same
++# reproducibility reasoning as DOWNSTREAM_FORCE_FAIL in
++# mock_merchants/downstream_service.py and RZP_PENDING_DEMO_FORCE), but
++# defaults to OFF: out of the box this check reflects your real RazorpayX
++# balance, not a hardcoded "always fails" result. Still fetches the real
++# balance for an honest event payload either way (available_balance shown
++# to the dashboard is real); this flag only controls whether the pass/fail
++# classification also honors that real number for this one merchant_id.
++# Set to true only if you specifically want a guaranteed-reproducible
++# insufficient-funds demo regardless of what's actually in the account.
+ REAL_BALANCE_DEMO_FORCE_INSUFFICIENT = os.getenv(
+-    "REAL_BALANCE_DEMO_FORCE_INSUFFICIENT", "true"
++    "REAL_BALANCE_DEMO_FORCE_INSUFFICIENT", "false"
+ ).lower() == "true"
+ FORCE_INSUFFICIENT_MERCHANT_ID = "merchant_rzp_insufficient"
+ 
+diff --git a/compensating_agent/pending_payout_worker.py b/compensating_agent/pending_payout_worker.py
+index 1115c4b..e85e063 100644
+--- a/compensating_agent/pending_payout_worker.py
++++ b/compensating_agent/pending_payout_worker.py
+@@ -50,8 +50,14 @@ from state_log.redis_client import publish_event
+ logging.basicConfig(level=logging.INFO)
+ logger = logging.getLogger(__name__)
+ 
+-RECHECK_INTERVAL_SECONDS = float(os.getenv("PENDING_PAYOUT_RECHECK_INTERVAL_SECONDS", "15"))
+-MAX_CHECKS = int(os.getenv("PENDING_PAYOUT_MAX_CHECKS", "8"))
++# Was 15s x 8 = up to ~2 minutes before a demo run gave up and marked a
++# pending payout 'exhausted' — far longer than anyone watching a live demo
++# will wait on one preset. Trimmed to 5s x 3 = ~15s worst case. Still fully
++# overridable via env for anyone who wants the original slower/more
++# patient cadence (e.g. against real RazorpayX test-mode timing that
++# genuinely needs longer to settle).
++RECHECK_INTERVAL_SECONDS = float(os.getenv("PENDING_PAYOUT_RECHECK_INTERVAL_SECONDS", "5"))
++MAX_CHECKS = int(os.getenv("PENDING_PAYOUT_MAX_CHECKS", "3"))
+ 
+ 
+ async def _write_resolution_step(row: dict, status: str, razorpay_status: str) -> None:
+diff --git a/dashboard/src/App.jsx b/dashboard/src/App.jsx
+index 6cc0505..0bfc284 100644
+--- a/dashboard/src/App.jsx
++++ b/dashboard/src/App.jsx
+@@ -160,6 +160,21 @@ export default function App() {
+         log(`Workflow initialised — budget ₹${data.budget_limit.toLocaleString("en-IN")}`);
+         break;
+ 
++      case "planner_started":
++        log(`🧠 Planner: calling ${data.model} for goal "${data.goal}" (budget ₹${data.budget_limit.toLocaleString("en-IN")})`);
++        break;
++
++      case "planner_plan_generated":
++        if (data.source === "llm") {
++          log(`🧠 Planner: ${data.model} returned ${data.line_items} line item(s)`);
++        } else {
++          log(`🧠 Planner: LLM call failed/unusable (${data.reason}) — used deterministic fallback plan instead`);
++        }
++        (data.plan || []).forEach((p) =>
++          log(`    - ${p.merchant_id}: ₹${p.amount.toLocaleString("en-IN")} — ${p.item}`)
++        );
++        break;
++
+       case "payment_attempt":
+         upsertMerchant(data.merchant_id, data.payee, data.amount);
+         log(`→ Paying ${data.merchant_id} — ₹${data.amount.toLocaleString("en-IN")} (${data.item})`);
+diff --git a/primary_agent/planner.py b/primary_agent/planner.py
+index ba38312..4153985 100644
+--- a/primary_agent/planner.py
++++ b/primary_agent/planner.py
+@@ -42,6 +42,7 @@ from google.genai import types
+ import structlog
+ 
+ from primary_agent.catalog import MERCHANT_CATALOG, CATALOG_BY_ID, catalog_prompt_block
++from state_log.redis_client import publish_event
+ 
+ logger = structlog.get_logger()
+ 
+@@ -176,7 +177,15 @@ def _fallback_plan(budget_limit: float) -> list[PlannedPayment]:
+     return plan
+ 
+ 
+-async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPayment]:
++def _emit(workflow_id: str, event_type: str, data: dict) -> None:
++    """No-op unless a workflow_id is supplied — plan_procurement() is also
++    called from places (tests, one-off scripts) with nothing to publish
++    to."""
++    if workflow_id:
++        publish_event(workflow_id, event_type, data)
++
++
++async def plan_procurement(goal: str, budget_limit: float, workflow_id: str = "") -> list[PlannedPayment]:
+     """
+     Input: a plain-English goal + a budget limit.
+     Output: an ordered list of PlannedPayment, chosen from the catalog and
+@@ -184,7 +193,22 @@ async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPaymen
+     Falls back to a deterministic plan (see _fallback_plan) rather than
+     raising, matching this codebase's existing fail-safe-over-crash
+     philosophy for LLM call sites.
++
++    When workflow_id is given, publishes planner_started /
++    planner_plan_generated events (same Redis pub/sub pattern every other
++    node uses — see state_log/redis_client.py) so the dashboard can show
++    that the Gemini call actually happened, and whether the returned plan
++    came from a real LLM response or the deterministic fallback. Before
++    this, nothing about the planning step was ever published — the
++    "Primary Agent Log" panel only ever showed authorization/policy
++    events, so there was no way to tell from the UI whether the planner
++    (or the LLM behind it) had run at all, succeeded, or silently fell
++    back.
+     """
++    _emit(workflow_id, "planner_started", {
++        "goal": goal, "budget_limit": budget_limit, "model": PLANNER_MODEL,
++    })
++
+     prompt = _PLANNER_PROMPT.format(
+         catalog=catalog_prompt_block(),
+         max_items=MAX_LINE_ITEMS,
+@@ -204,6 +228,11 @@ async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPaymen
+             plan = _validate_and_clamp(data)
+             if plan:
+                 logger.info("planner.plan_generated", goal=goal, line_items=len(plan))
++                _emit(workflow_id, "planner_plan_generated", {
++                    "source": "llm", "model": PLANNER_MODEL,
++                    "line_items": len(plan),
++                    "plan": [p.to_dict() for p in plan],
++                })
+                 return plan
+ 
+             # Every item was dropped by guardrails — treat like a parse
+@@ -231,4 +260,11 @@ async def plan_procurement(goal: str, budget_limit: float) -> list[PlannedPaymen
+         "planner.falling_back_to_deterministic_plan",
+         goal=goal, last_api_error=str(last_api_exc) if last_api_exc else None,
+     )
+-    return _fallback_plan(budget_limit)
++    plan = _fallback_plan(budget_limit)
++    _emit(workflow_id, "planner_plan_generated", {
++        "source": "fallback",
++        "reason": str(last_api_exc) if last_api_exc else "no valid line items from the LLM",
++        "line_items": len(plan),
++        "plan": [p.to_dict() for p in plan],
++    })
++    return plan
+diff --git a/primary_agent/procurement_agent.py b/primary_agent/procurement_agent.py
+index f8bfc84..34774cc 100644
+--- a/primary_agent/procurement_agent.py
++++ b/primary_agent/procurement_agent.py
+@@ -219,8 +219,21 @@ async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id:
+     print(f"\n[Aegis Demo] Starting workflow {wid}")
+     print(f"[Aegis Demo] Goal: {goal} | Budget: ₹{budget_limit:,.0f}\n")
+ 
++    # Same 1.5s startup gap run_procurement() uses — gives the dashboard WS
++    # time to subscribe before ANY event for this workflow_id publishes.
++    # This now has to happen before the planner call too: plan_procurement()
++    # (primary_agent/planner.py) publishes planner_started/
++    # planner_plan_generated on the same fire-and-forget Redis pub/sub as
++    # everything else (state_log/redis_client.py — no subscriber yet means
++    # the message is just gone, not queued for later). Previously this
++    # sleep sat AFTER the planner call, so those two events almost always
++    # published before the dashboard had connected and were silently
++    # dropped — the one visible signal that the LLM had actually been
++    # called never reached the UI.
++    await asyncio.sleep(1.5)
++
+     print("[Primary Agent] Asking the planner for a payment sequence...")
+-    plan = await plan_procurement(goal, budget_limit)
++    plan = await plan_procurement(goal, budget_limit, workflow_id=wid)
+     if not plan:
+         print("[Primary Agent] Planner produced no usable line items — nothing to pay.")
+         return
+@@ -230,11 +243,6 @@ async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id:
+     print()
+ 
+     async with httpx.AsyncClient(timeout=30.0) as client:
+-        # Same 1.5s startup gap as run_procurement — gives the dashboard WS
+-        # time to subscribe before workflow_init fires. The planner call above
+-        # usually takes longer than this, but if the model returns instantly
+-        # (e.g. a cached response) the race can still happen.
+-        await asyncio.sleep(1.5)
+         await client.post(f"{PROXY_URL}/init_workflow", headers=HEADERS, json={
+             "workflow_id": wid,
+             "budget_limit": budget_limit,
+diff --git a/run_bg.py b/run_bg.py
+index f2b6001..c51ad4e 100644
+--- a/run_bg.py
++++ b/run_bg.py
+@@ -1,17 +1,39 @@
+-﻿import subprocess
+-import time
++﻿import os
++import subprocess
+ import sys
+ 
+ from mock_merchants.registry import MERCHANTS
+ 
++# Same problem start.ps1 had: every service below used to be spawned with
++# subprocess.Popen and never recorded anywhere, so there was no way to
++# stop them short of hunting PIDs manually (Ctrl+C only kills this
++# launcher script itself, not its detached children). Every PID now gets
++# written to logs/run_bg_pids.txt — run stop_bg.py to actually shut all of
++# this back down.
++_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
++_LOG_DIR = os.path.join(_REPO_ROOT, "logs")
++os.makedirs(_LOG_DIR, exist_ok=True)
++_PID_FILE = os.path.join(_LOG_DIR, "run_bg_pids.txt")
++
++_procs: list[tuple[int, str]] = []
++
++
++def _spawn(args: list[str], name: str) -> None:
++    proc = subprocess.Popen(args)
++    _procs.append((proc.pid, name))
++
++
+ print("Starting Services...")
+ for merchant_id, spec in MERCHANTS.items():
+-    subprocess.Popen(
+-        [sys.executable, "-m", "uvicorn", spec.app_target, "--port", str(spec.port)]
+-    )
+-subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.policy_service:app", "--port", "8004"])
+-subprocess.Popen([sys.executable, "-m", "uvicorn", "engine.anomaly_service:app", "--port", "8005"])
+-subprocess.Popen([sys.executable, "-m", "uvicorn", "proxy.mcp_proxy:app", "--port", "8000"])
+-subprocess.Popen([sys.executable, "-m", "compensating_agent.worker"])
++    _spawn([sys.executable, "-m", "uvicorn", spec.app_target, "--port", str(spec.port)], merchant_id)
++_spawn([sys.executable, "-m", "uvicorn", "engine.policy_service:app", "--port", "8004"], "policy_service")
++_spawn([sys.executable, "-m", "uvicorn", "engine.anomaly_service:app", "--port", "8005"], "anomaly_service")
++_spawn([sys.executable, "-m", "uvicorn", "proxy.mcp_proxy:app", "--port", "8000"], "proxy")
++_spawn([sys.executable, "-m", "compensating_agent.worker"], "compensation_worker")
++
++with open(_PID_FILE, "w", encoding="utf-8") as f:
++    for pid, name in _procs:
++        f.write(f"{pid}\t{name}\n")
+ 
+ print("All services are running in background.")
++print(f"PIDs recorded in {_PID_FILE} — run `python stop_bg.py` to stop them all.")
+diff --git a/start.ps1 b/start.ps1
+index fecf977..7635a2a 100644
+--- a/start.ps1
++++ b/start.ps1
+@@ -15,19 +15,36 @@ Start-Sleep -Seconds 2
+ 
+ Write-Host "[Aegis] Starting services..." -ForegroundColor Cyan
+ 
++# PID tracking — every process this script starts (servers, worker,
++# dashboard) gets its PID appended here. stop.ps1 reads this file back to
++# know exactly what to kill. Without this, "stop everything" had no way to
++# find these processes at all: they're started via Start-Process (real OS
++# processes), not Start-Job, so `Get-Process python | Stop-Job` (the old
++# advice printed at the bottom of this script) silently did nothing —
++# Stop-Job only accepts job objects, not process objects — leaving every
++# uvicorn server, the worker, and the dashboard running as orphans after
++# every single demo session.
++$pidFile = "$dir\logs\pids.txt"
++New-Item -ItemType Directory -Force -Path "$dir\logs" | Out-Null
++Remove-Item -Force -ErrorAction SilentlyContinue $pidFile
++
++function Save-Pid($procId, $name) {
++    Add-Content -Path $pidFile -Value "$procId`t$name"
++}
++
+ # Start each uvicorn as a daemon background task (IsDaemon=true equivalent via nohup-style)
+ function Start-Service($module, $port, $name) {
+-    Start-Process -FilePath $py `
++    $proc = Start-Process -FilePath $py `
+         -ArgumentList "-m uvicorn $module --port $port --log-level warning" `
+         -WorkingDirectory $dir `
+         -WindowStyle Hidden `
+         -RedirectStandardOutput "$dir\logs\$name.log" `
+-        -RedirectStandardError  "$dir\logs\$name.err"
++        -RedirectStandardError  "$dir\logs\$name.err" `
++        -PassThru
++    Save-Pid $proc.Id $name
+     Write-Host "  Started $name on :$port (log: logs\$name.log)" -ForegroundColor DarkGray
+ }
+ 
+-New-Item -ItemType Directory -Force -Path "$dir\logs" | Out-Null
+-
+ Start-Service "mock_merchants.merchant_a_crm:app"     8001 "merchant_a"
+ Start-Service "mock_merchants.merchant_b_hotel:app"   8002 "merchant_b"
+ Start-Service "mock_merchants.merchant_c_domain:app"  8003 "merchant_c"
+@@ -42,7 +59,8 @@ Start-Service "proxy.mcp_proxy:app"                    8000 "proxy"
+ Start-Sleep -Seconds 4
+ 
+ # Start compensation worker in a visible window so logs are easy to watch during demo
+-Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir'; python -X utf8 -m compensating_agent.worker`""
++$workerProc = Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir'; python -X utf8 -m compensating_agent.worker`"" -PassThru
++Save-Pid $workerProc.Id "compensation_worker (powershell window)"
+ Write-Host "  Started compensation worker (visible window)" -ForegroundColor DarkGray
+ 
+ # Health check — all services
+@@ -60,7 +78,8 @@ $allOk = $true
+ }
+ 
+ # Start dashboard in a separate visible window so you can see Vite output
+-Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir\dashboard'; npm run dev`""
++$dashProc = Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir\dashboard'; npm run dev`"" -PassThru
++Save-Pid $dashProc.Id "dashboard (powershell window)"
+ 
+ Write-Host ""
+ if ($allOk) {
+@@ -76,4 +95,4 @@ Write-Host "[Aegis] Run the demo:" -ForegroundColor Cyan
+ Write-Host "  python -X utf8 primary_agent/procurement_agent.py" -ForegroundColor Yellow
+ Write-Host ""
+ Write-Host "[Aegis] Stop everything:" -ForegroundColor DarkGray
+-Write-Host "  Get-Process python | Stop-Job; docker compose down" -ForegroundColor DarkGray
+\ No newline at end of file
++Write-Host "  .\stop.ps1" -ForegroundColor Yellow
+\ No newline at end of file
+diff --git a/stop.ps1 b/stop.ps1
+new file mode 100644
+index 0000000..3698812
+--- /dev/null
++++ b/stop.ps1
+@@ -0,0 +1,63 @@
++# stop.ps1 — Aegis full stack shutdown
++# Run from the repo root in PowerShell, after start.ps1.
++#
++# start.ps1 previously told you to run:
++#   Get-Process python | Stop-Job; docker compose down
++# That's broken: Stop-Job only accepts PowerShell *job* objects (from
++# Start-Job). Every service here is launched with Start-Process, which
++# returns real OS Process objects, so Stop-Job silently did nothing —
++# every uvicorn server, the compensation worker, and the dashboard kept
++# running as orphans after "stopping" everything, which is why a process
++# would seem to just get stuck around instead of actually exiting.
++#
++# This script instead reads back the PIDs start.ps1 recorded in
++# logs\pids.txt and kills each one directly — using `taskkill /T /F` so
++# the two processes started as visible PowerShell windows (the
++# compensation worker, the dashboard) also take their child python/node
++# process down with them, instead of just closing an empty window.
++
++$dir = Split-Path -Parent $MyInvocation.MyCommand.Definition
++if (-not $dir -or -not (Test-Path $dir)) { $dir = $PWD.Path }
++Set-Location $dir
++
++$pidFile = "$dir\logs\pids.txt"
++
++if (-not (Test-Path $pidFile)) {
++    Write-Host "[Aegis] No logs\pids.txt found — nothing tracked from start.ps1 to stop." -ForegroundColor Yellow
++    Write-Host "[Aegis] Still bringing down Redis..." -ForegroundColor Cyan
++    docker compose down
++    exit
++}
++
++Write-Host "[Aegis] Stopping tracked processes..." -ForegroundColor Cyan
++
++Get-Content $pidFile | ForEach-Object {
++    if (-not $_.Trim()) { return }
++    $parts = $_ -split "`t"
++    $procId = $parts[0]
++    $name = if ($parts.Count -gt 1) { $parts[1] } else { "unknown" }
++
++    if (Get-Process -Id $procId -ErrorAction SilentlyContinue) {
++        # /T kills the whole process tree (so e.g. the powershell window
++        # running `python -m compensating_agent.worker` also takes that
++        # python process down), /F forces it, matching what Ctrl+C in each
++        # window would eventually do but reliably and without needing 9
++        # separate windows closed by hand.
++        taskkill /PID $procId /T /F 2>&1 | Out-Null
++        Write-Host "  Stopped $name (PID $procId)" -ForegroundColor DarkGray
++    } else {
++        Write-Host "  $name (PID $procId) already gone" -ForegroundColor DarkGray
++    }
++}
++
++Remove-Item -Force -ErrorAction SilentlyContinue $pidFile
++
++Write-Host "[Aegis] Stopping Redis..." -ForegroundColor Cyan
++docker compose down
++
++Write-Host ""
++Write-Host "[Aegis] Stopped." -ForegroundColor Green
++Write-Host ""
++Write-Host "[Aegis] If anything still looks stuck (rare — a hung network call" -ForegroundColor DarkGray
++Write-Host "  inside a service can occasionally survive taskkill /F), check:" -ForegroundColor DarkGray
++Write-Host "  Get-Process python,node -ErrorAction SilentlyContinue | Format-Table Id,ProcessName,StartTime" -ForegroundColor DarkGray
+diff --git a/stop_bg.py b/stop_bg.py
+new file mode 100644
+index 0000000..eccd388
+--- /dev/null
++++ b/stop_bg.py
+@@ -0,0 +1,55 @@
++"""
++stop_bg.py
++Counterpart to run_bg.py, which previously had no way to stop what it
++started — every service was spawned with a bare subprocess.Popen() and
++never recorded anywhere, so a run_bg.py session could only be killed by
++manually hunting down each PID. Reads back logs/run_bg_pids.txt (written
++by the current run_bg.py) and terminates each one.
++"""
++from __future__ import annotations
++
++import os
++import signal
++import sys
++
++_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
++_PID_FILE = os.path.join(_REPO_ROOT, "logs", "run_bg_pids.txt")
++
++
++def _kill(pid: int) -> bool:
++    try:
++        if sys.platform == "win32":
++            import subprocess
++            # /T kills the process tree (uvicorn workers can spawn their
++            # own children), /F forces it.
++            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
++        else:
++            os.kill(pid, signal.SIGTERM)
++        return True
++    except (ProcessLookupError, OSError):
++        return False
++
++
++def main() -> None:
++    if not os.path.exists(_PID_FILE):
++        print(f"No {_PID_FILE} found — nothing to stop (or it was already cleaned up).")
++        return
++
++    with open(_PID_FILE, "r", encoding="utf-8") as f:
++        lines = [line.strip() for line in f if line.strip()]
++
++    for line in lines:
++        pid_str, _, name = line.partition("\t")
++        try:
++            pid = int(pid_str)
++        except ValueError:
++            continue
++        ok = _kill(pid)
++        print(f"  {'Stopped' if ok else 'Already gone'}: {name or 'unknown'} (PID {pid})")
++
++    os.remove(_PID_FILE)
++    print("Done.")
++
++
++if __name__ == "__main__":
++    main()

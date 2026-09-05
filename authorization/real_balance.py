@@ -21,14 +21,19 @@ from dataclasses import dataclass
 
 from razorpayx.client import get_available_balance
 
-# Insufficient Funds demo preset — merchant_rzp_insufficient always blocks
-# here regardless of the account's actual balance, same reproducibility
-# reasoning as DOWNSTREAM_FORCE_FAIL (mock_merchants/downstream_service.py)
-# and RZP_PENDING_DEMO_FORCE. Still fetches the real balance for an honest
-# event payload (available_balance shown to the dashboard is real), just
-# doesn't classify off it for this one merchant_id.
+# Insufficient Funds demo preset — merchant_rzp_insufficient CAN be forced
+# to block here regardless of the account's actual balance (same
+# reproducibility reasoning as DOWNSTREAM_FORCE_FAIL in
+# mock_merchants/downstream_service.py and RZP_PENDING_DEMO_FORCE), but
+# defaults to OFF: out of the box this check reflects your real RazorpayX
+# balance, not a hardcoded "always fails" result. Still fetches the real
+# balance for an honest event payload either way (available_balance shown
+# to the dashboard is real); this flag only controls whether the pass/fail
+# classification also honors that real number for this one merchant_id.
+# Set to true only if you specifically want a guaranteed-reproducible
+# insufficient-funds demo regardless of what's actually in the account.
 REAL_BALANCE_DEMO_FORCE_INSUFFICIENT = os.getenv(
-    "REAL_BALANCE_DEMO_FORCE_INSUFFICIENT", "true"
+    "REAL_BALANCE_DEMO_FORCE_INSUFFICIENT", "false"
 ).lower() == "true"
 FORCE_INSUFFICIENT_MERCHANT_ID = "merchant_rzp_insufficient"
 

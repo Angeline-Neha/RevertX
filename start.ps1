@@ -15,18 +15,35 @@ Start-Sleep -Seconds 2
 
 Write-Host "[Aegis] Starting services..." -ForegroundColor Cyan
 
+# PID tracking — every process this script starts (servers, worker,
+# dashboard) gets its PID appended here. stop.ps1 reads this file back to
+# know exactly what to kill. Without this, "stop everything" had no way to
+# find these processes at all: they're started via Start-Process (real OS
+# processes), not Start-Job, so `Get-Process python | Stop-Job` (the old
+# advice printed at the bottom of this script) silently did nothing —
+# Stop-Job only accepts job objects, not process objects — leaving every
+# uvicorn server, the worker, and the dashboard running as orphans after
+# every single demo session.
+$pidFile = "$dir\logs\pids.txt"
+New-Item -ItemType Directory -Force -Path "$dir\logs" | Out-Null
+Remove-Item -Force -ErrorAction SilentlyContinue $pidFile
+
+function Save-Pid($procId, $name) {
+    Add-Content -Path $pidFile -Value "$procId`t$name"
+}
+
 # Start each uvicorn as a daemon background task (IsDaemon=true equivalent via nohup-style)
 function Start-Service($module, $port, $name) {
-    Start-Process -FilePath $py `
+    $proc = Start-Process -FilePath $py `
         -ArgumentList "-m uvicorn $module --port $port --log-level warning" `
         -WorkingDirectory $dir `
         -WindowStyle Hidden `
         -RedirectStandardOutput "$dir\logs\$name.log" `
-        -RedirectStandardError  "$dir\logs\$name.err"
+        -RedirectStandardError  "$dir\logs\$name.err" `
+        -PassThru
+    Save-Pid $proc.Id $name
     Write-Host "  Started $name on :$port (log: logs\$name.log)" -ForegroundColor DarkGray
 }
-
-New-Item -ItemType Directory -Force -Path "$dir\logs" | Out-Null
 
 Start-Service "mock_merchants.merchant_a_crm:app"     8001 "merchant_a"
 Start-Service "mock_merchants.merchant_b_hotel:app"   8002 "merchant_b"
@@ -42,7 +59,8 @@ Start-Service "proxy.mcp_proxy:app"                    8000 "proxy"
 Start-Sleep -Seconds 4
 
 # Start compensation worker in a visible window so logs are easy to watch during demo
-Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir'; python -X utf8 -m compensating_agent.worker`""
+$workerProc = Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir'; python -X utf8 -m compensating_agent.worker`"" -PassThru
+Save-Pid $workerProc.Id "compensation_worker (powershell window)"
 Write-Host "  Started compensation worker (visible window)" -ForegroundColor DarkGray
 
 # Health check — all services
@@ -60,7 +78,8 @@ $allOk = $true
 }
 
 # Start dashboard in a separate visible window so you can see Vite output
-Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir\dashboard'; npm run dev`""
+$dashProc = Start-Process powershell -ArgumentList "-NoExit -Command `"Set-Location '$dir\dashboard'; npm run dev`"" -PassThru
+Save-Pid $dashProc.Id "dashboard (powershell window)"
 
 Write-Host ""
 if ($allOk) {
@@ -76,4 +95,4 @@ Write-Host "[Aegis] Run the demo:" -ForegroundColor Cyan
 Write-Host "  python -X utf8 primary_agent/procurement_agent.py" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "[Aegis] Stop everything:" -ForegroundColor DarkGray
-Write-Host "  Get-Process python | Stop-Job; docker compose down" -ForegroundColor DarkGray
+Write-Host "  .\stop.ps1" -ForegroundColor Yellow

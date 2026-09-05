@@ -219,8 +219,21 @@ async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id:
     print(f"\n[Aegis Demo] Starting workflow {wid}")
     print(f"[Aegis Demo] Goal: {goal} | Budget: ₹{budget_limit:,.0f}\n")
 
+    # Same 1.5s startup gap run_procurement() uses — gives the dashboard WS
+    # time to subscribe before ANY event for this workflow_id publishes.
+    # This now has to happen before the planner call too: plan_procurement()
+    # (primary_agent/planner.py) publishes planner_started/
+    # planner_plan_generated on the same fire-and-forget Redis pub/sub as
+    # everything else (state_log/redis_client.py — no subscriber yet means
+    # the message is just gone, not queued for later). Previously this
+    # sleep sat AFTER the planner call, so those two events almost always
+    # published before the dashboard had connected and were silently
+    # dropped — the one visible signal that the LLM had actually been
+    # called never reached the UI.
+    await asyncio.sleep(1.5)
+
     print("[Primary Agent] Asking the planner for a payment sequence...")
-    plan = await plan_procurement(goal, budget_limit)
+    plan = await plan_procurement(goal, budget_limit, workflow_id=wid)
     if not plan:
         print("[Primary Agent] Planner produced no usable line items — nothing to pay.")
         return
@@ -230,11 +243,6 @@ async def run_procurement_with_plan(goal: str, budget_limit: float, workflow_id:
     print()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        # Same 1.5s startup gap as run_procurement — gives the dashboard WS
-        # time to subscribe before workflow_init fires. The planner call above
-        # usually takes longer than this, but if the model returns instantly
-        # (e.g. a cached response) the race can still happen.
-        await asyncio.sleep(1.5)
         await client.post(f"{PROXY_URL}/init_workflow", headers=HEADERS, json={
             "workflow_id": wid,
             "budget_limit": budget_limit,
