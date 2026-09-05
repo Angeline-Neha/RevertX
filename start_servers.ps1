@@ -30,6 +30,15 @@ Get-Job | Stop-Job -ErrorAction SilentlyContinue
 Get-Job | Remove-Job -ErrorAction SilentlyContinue
 
 Write-Host "Checking for stale processes still holding required ports..."
+# Release the dashboard dev port too. The dashboard is started separately with npm,
+# but a stale Vite process here causes the silent 5173 -> 5174 fallback.
+$dashboardPort = 5173
+$dashboardConns = Get-NetTCPConnection -LocalPort $dashboardPort -State Listen -ErrorAction SilentlyContinue
+foreach ($c in $dashboardConns) {
+    Write-Host "  Dashboard port $dashboardPort is held by PID $($c.OwningProcess) — stopping it."
+    Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
+}
+
 $requiredPorts = @(8000, 8004, 8005) + ($merchants | ForEach-Object { $_.Port })
 foreach ($port in $requiredPorts) {
     $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
@@ -84,7 +93,9 @@ if ($failed.Count -gt 0) {
 }
 
 Write-Host "All services running as background jobs in THIS window."
+Write-Host "Dashboard: run .\start_dashboard.ps1 in a second PowerShell window."
 Write-Host "Tail all output live with:  Get-Job | Receive-Job -Wait"
 Write-Host "Stop everything with:       Get-Job | Stop-Job; Get-Job | Remove-Job"
+Write-Host "Check dashboard/backend health with:  Invoke-WebRequest http://localhost:8000/health -UseBasicParsing"
 
 Get-Job | Receive-Job -Wait
