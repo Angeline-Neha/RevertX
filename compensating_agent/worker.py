@@ -17,6 +17,7 @@ behavioral proof.
 import asyncio
 import json
 import logging
+from contextlib import AsyncExitStack
 import aio_pika
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -28,47 +29,85 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 async def process_message(
-    message: aio_pika.abc.AbstractIncomingMessage, graph
+    message: aio_pika.abc.AbstractIncomingMessage, get_graph
 ) -> None:
     async with message.process():
         body = message.body.decode()
         data = json.loads(body)
         wid = data["workflow_id"]
         failing_step = data["failing_step"]
-        
+
         logger.info(f"Received compensation request for workflow: {wid}")
         publish_event(wid, "compensation_started", {
             "workflow_id": wid, "trigger": "mandate_limit_exceeded",
         })
-        try:
-            result = await run_compensation(wid, failing_step, graph=graph)
-            publish_event(wid, "compensation_complete", {
-                "workflow_id": wid,
-                "has_udir": result.get("udir_payload") is not None,
-                "has_liability_report": result.get("liability_report") is not None,
-            })
-            logger.info(f"Compensation complete for workflow: {wid}")
-        except Exception as exc:
-            publish_event(wid, "compensation_error", {"error": str(exc)})
-            logger.error(f"Compensation error for {wid}: {exc}")
-            # Deliberately not re-raising: message.process() will still ack
-            # on normal exit from this block. A node-level failure inside
-            # run_compensation already has its own handling (DLQ, fail-safe
-            # defaults); an exception escaping this far means something
-            # unexpected happened, and the checkpoint for whatever nodes DID
-            # complete is already durably saved in Postgres regardless of
-            # what we do here — a future run_compensation() call for the
-            # same workflow_id will still resume from that point rather
-            # than lose progress.
+        # get_graph() returns the current (checkpointer, graph) pair. On a
+        # dead-connection error (stale idle Postgres socket — see
+        # CHECKPOINTER_DSN's comment in db/client.py) we ask for a FRESH
+        # pair and retry exactly once, instead of letting one bad socket
+        # kill an otherwise-healthy demo run. A second failure is a real
+        # problem (Postgres actually down), not a transient idle-drop, so
+        # it's reported normally rather than retried again.
+        for attempt in (1, 2):
+            _, graph = await get_graph(fresh=attempt == 2)
+            try:
+                result = await run_compensation(wid, failing_step, graph=graph)
+                publish_event(wid, "compensation_complete", {
+                    "workflow_id": wid,
+                    "has_udir": result.get("udir_payload") is not None,
+                    "has_liability_report": result.get("liability_report") is not None,
+                })
+                logger.info(f"Compensation complete for workflow: {wid}")
+                return
+            except Exception as exc:
+                is_conn_error = "connection" in str(exc).lower() or "consuming input" in str(exc).lower()
+                if attempt == 1 and is_conn_error:
+                    logger.warning(f"Checkpointer connection looks dead ({exc}) — rebuilding and retrying once for {wid}")
+                    continue
+                publish_event(wid, "compensation_error", {"error": str(exc)})
+                logger.error(f"Compensation error for {wid}: {exc}")
+                return
+                # Deliberately not re-raising: message.process() will still ack
+                # on normal exit from this block. A node-level failure inside
+                # run_compensation already has its own handling (DLQ, fail-safe
+                # defaults); an exception escaping this far means something
+                # unexpected happened, and the checkpoint for whatever nodes DID
+                # complete is already durably saved in Postgres regardless of
+                # what we do here — a future run_compensation() call for the
+                # same workflow_id will still resume from that point rather
+                # than lose progress.
 
 async def main() -> None:
     await db.run_migrations()
     await db.init_pool()
 
-    async with AsyncPostgresSaver.from_conn_string(db.DSN) as checkpointer:
-        await checkpointer.setup()
-        graph = build_graph(checkpointer=checkpointer)
+    # Manages the (checkpointer, graph) pair ourselves via AsyncExitStack
+    # instead of a single `async with ... as checkpointer:` wrapping the
+    # whole process lifetime — that pattern is exactly what let one stale
+    # idle connection take down every compensation run for the rest of the
+    # process. get_graph(fresh=True) closes the old connection and opens a
+    # brand new one; process_message() above calls it after a
+    # connection-abort error so a dead socket self-heals on the next
+    # message instead of requiring a manual worker restart.
+    stack = AsyncExitStack()
+    state = {"checkpointer": None, "graph": None}
 
+    async def get_graph(fresh: bool = False):
+        if fresh and state["checkpointer"] is not None:
+            await stack.aclose()
+            state["checkpointer"] = None
+        if state["checkpointer"] is None:
+            checkpointer = await stack.enter_async_context(
+                AsyncPostgresSaver.from_conn_string(db.CHECKPOINTER_DSN)
+            )
+            await checkpointer.setup()
+            state["checkpointer"] = checkpointer
+            state["graph"] = build_graph(checkpointer=checkpointer)
+        return state["checkpointer"], state["graph"]
+
+    await get_graph()
+
+    try:
         connection = await aio_pika.connect_robust("amqp://guest:guest@localhost:5673/")
         async with connection:
             channel = await connection.channel()
@@ -93,12 +132,14 @@ async def main() -> None:
             )
 
             logger.info("Worker started. Listening for compensation_requests...")
-            await queue.consume(lambda message: process_message(message, graph))
+            await queue.consume(lambda message: process_message(message, get_graph))
 
             try:
                 await asyncio.Future()
             finally:
                 await db.close_pool()
+    finally:
+        await stack.aclose()
 
 if __name__ == "__main__":
     import sys

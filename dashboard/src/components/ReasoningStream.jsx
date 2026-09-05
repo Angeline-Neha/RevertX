@@ -10,33 +10,28 @@ export default function ReasoningStream({ llmStream, mathLine }) {
   return (
     <div className="w-80 shrink-0 flex flex-col border-l border-[var(--border)] bg-[var(--bg-secondary)]">
       {/* LLM Stream section */}
-      <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] border-b border-[var(--border)] uppercase tracking-wider flex items-center gap-2">
-        <span>LLM Reasoning</span>
-        <span className="text-[#3fb950] text-xs normal-case font-normal">← real token stream</span>
+      <div className="panel-head">
+        <span className="dot" style={{ background: "var(--text-muted)" }} />
+        <span className="title">Reasoning</span>
+        <span className="dim">token stream</span>
       </div>
 
-      <div
-        ref={llmRef}
-        className="flex-1 overflow-y-auto px-3 py-2 font-mono text-xs leading-5 text-[var(--text-primary)]"
-        style={{ minHeight: 0 }}
-      >
+      <div ref={llmRef} className="flex-1 overflow-y-auto px-3.5 py-3" style={{ minHeight: 0 }}>
         {!llmStream && (
-          <div className="text-[var(--text-muted)] italic">
-            Waiting for policy extraction call...
-          </div>
+          <div className="stream-text"><span className="placeholder">waiting for a run…</span></div>
         )}
         {llmStream && (
-          <div className="whitespace-pre-wrap text-[var(--blue)]">{llmStream}</div>
+          <div className="stream-text" style={{ whiteSpace: "pre-wrap" }}>{llmStream}</div>
         )}
       </div>
 
       {/* Deterministic math section */}
-      <div className="border-t border-[var(--border)]">
-        <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] border-b border-[var(--border)] uppercase tracking-wider flex items-center gap-2">
-          <span>Deterministic Math</span>
-          <span className="text-[#d29922] text-xs normal-case font-normal">← no LLM here</span>
+      <div className="math-box" style={{ borderTop: "1px solid var(--border)", padding: 0 }}>
+        <div className="panel-head" style={{ borderBottom: "1px solid var(--border)" }}>
+          <span className="title">Deterministic math</span>
+          <span className="dim">no LLM here</span>
         </div>
-        <div className="px-3 py-3 font-mono text-xs">
+        <div className="px-3.5 py-3 font-mono text-xs">
           {!mathLine && (
             <div className="text-[var(--text-muted)] italic">Waiting for refund computation...</div>
           )}
@@ -47,13 +42,13 @@ export default function ReasoningStream({ llmStream, mathLine }) {
                 mathLine.isFailSafe
                   ? {
                       background: "#2a1f0a",
-                      border: "1px solid #d29922",
-                      color: "#d29922",
+                      border: "1px solid var(--blue)",
+                      color: "var(--blue)",
                     }
                   : {
-                      background: "#1a2a1a",
+                      background: "#132119",
                       border: "1px solid var(--green)",
-                      color: "#3fb950",
+                      color: "var(--green)",
                     }
               }
             >

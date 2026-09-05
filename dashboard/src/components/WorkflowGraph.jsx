@@ -11,16 +11,16 @@ import { motion } from "framer-motion";
 import EvidencePopover from "./EvidencePopover.jsx";
 
 const STATUS_STYLES = {
-  pending:     { bg: "#484f58", border: "#484f58", text: "#c9d1d9", icon: "○" },
-  in_progress: { bg: "#1a2332", border: "#58a6ff", text: "#58a6ff", icon: "◌", pulse: true },
-  success:     { bg: "#1a3320", border: "#3fb950", text: "#3fb950", icon: "✓" },
-  failed:      { bg: "#2d1a1a", border: "#f85149", text: "#f85149", icon: "✗" },
-  skipped:     { bg: "#2a2a2a", border: "#484f58", text: "#8b949e", icon: "—" },
+  pending:     { bg: "#1c2436", border: "#2a3349", text: "#7c8399", icon: "○" },
+  in_progress: { bg: "#1c2436", border: "#dba955", text: "#dba955", icon: "◌", pulse: true },
+  success:     { bg: "#1c2436", border: "#5fb489", text: "#5fb489", icon: "✓" },
+  failed:      { bg: "#1c2436", border: "#e3654c", text: "#e3654c", icon: "✗" },
+  skipped:     { bg: "#1c2436", border: "#2a3349", text: "#565e74", icon: "—" },
   // Phase 2/5/6 — a payout held at "pending" (non_terminal poll result, or
   // Preset 2's forced demo hold) is genuinely unconfirmed, not a failure —
   // same ⏳ language as the human_escalation_required banner. Distinct from
   // both `pending` above (hasn't run yet) and `failed` (confirmed dead).
-  held:        { bg: "#332a14", border: "#d29922", text: "#d29922", icon: "⏳" },
+  held:        { bg: "#1c2436", border: "#dba955", text: "#dba955", icon: "⏳" },
 };
 
 // Feature D — confidence/"evaluating" flicker. While a node is in_progress
@@ -237,11 +237,13 @@ export default function WorkflowGraph({
   }
 
   return (
-    <div className="flex-1 relative" style={{ background: "#0d1117" }}>
-      <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] border-b border-[var(--border)] uppercase tracking-wider bg-[var(--bg-secondary)]">
-        Workflow Graph
+    <div className="flex-1 relative" style={{ background: "var(--bg-primary)" }}>
+      <div className="panel-head" style={{ background: "var(--bg-secondary)" }}>
+        <span className="dot" style={{ background: "var(--violet)" }} />
+        <span className="title">Workflow</span>
+        <span className="dim">{merchants.length + compensationNodes.length} nodes</span>
       </div>
-      <div style={{ height: "calc(100% - 32px)" }}>
+      <div style={{ height: "calc(100% - 33px)" }}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -251,8 +253,8 @@ export default function WorkflowGraph({
           fitViewOptions={{ padding: 0.3 }}
           proOptions={{ hideAttribution: true }}
         >
-          <Background color="#30363d" gap={20} />
-          <Controls style={{ background: "#161b22", border: "1px solid #30363d" }} />
+          <Background color="#2a3349" gap={20} />
+          <Controls style={{ background: "#1c2436", border: "1px solid #2a3349" }} />
         </ReactFlow>
       </div>
       {popover}

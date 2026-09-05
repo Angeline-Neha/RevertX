@@ -1,65 +1,97 @@
+import { useState, useEffect } from "react";
 import BeforeAfterToggle from "./BeforeAfterToggle.jsx";
-import WalletPanel from "./WalletPanel.jsx";
-import PolicyPanel from "./PolicyPanel.jsx";
+import PolicyDrawer from "./PolicyDrawer.jsx";
 
+// Ledger redesign masthead + hero strip — wired to real data, no canned
+// animation. Budget/connected/liveWalletState all come straight from
+// App.jsx's WebSocket event handling, same as the previous TopBar.
 export default function TopBar({ workflowId, budget, connected, onNewRun, liveWalletState }) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [rzpBalance, setRzpBalance] = useState(null);
+
+  useEffect(() => {
+    fetch("http://localhost:8000/razorpay-balance")
+      .then((r) => r.json())
+      .then((d) => setRzpBalance(d.available_balance))
+      .catch(() => {});
+  }, []);
+
   const pct = budget.limit > 0 ? (budget.used / budget.limit) * 100 : 0;
-  const barColor = pct > 90 ? "#f85149" : pct > 70 ? "#d29922" : "#3fb950";
+  const gaugeClass = pct > 85 ? "danger" : pct > 60 ? "warn" : "";
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
-      <div className="flex items-center gap-3">
-        <span className="text-xl">🛡️</span>
+    <>
+      <div className="masthead" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24, padding: "12px 16px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
         <div>
-          <div className="text-sm font-semibold text-white">Aegis — Fault-Isolated Saga Orchestrator</div>
-          <div className="text-xs text-[var(--text-muted)] font-mono truncate max-w-xs">{workflowId}</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+            <span className="wordmark">RevertX</span>
+            <span className={`live-pill ${connected ? "" : "off"}`}>
+              <span className="live-dot" />{connected ? "live" : "disconnected"}
+            </span>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+            fault-isolated saga orchestrator · <span style={{ fontFamily: "var(--mono)" }}>{workflowId}</span>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <BeforeAfterToggle />
+          <button className="ledger-btn" onClick={() => setDrawerOpen(true)}>policy</button>
+          {onNewRun && (
+            <button className="ledger-btn primary" onClick={onNewRun}>new run</button>
+          )}
         </div>
       </div>
 
-      <div className="flex items-center gap-6">
-        {/* Phase 9.1 — Before/After Aegis toggle */}
-        <BeforeAfterToggle />
+      <div className="hero-strip">
+        <div className="hero-figure">
+          <div className="label">RazorpayX wallet available</div>
+          <div className="amount">
+            <span className="rupee">₹</span>
+            {rzpBalance !== null ? rzpBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+          </div>
+          {liveWalletState && (
+            <div className="sub">per-transaction limit ₹{liveWalletState.per_txn_limit?.toLocaleString("en-IN")}</div>
+          )}
+        </div>
 
-        {/* Budget meter */}
-        <div className="text-right">
-          <div className="text-xs text-[var(--text-muted)] mb-1">Budget</div>
-          <div className="flex items-center gap-2">
-            <div className="w-32 h-2 bg-[var(--bg-primary)] rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: barColor }}
-              />
-            </div>
-            <span className="text-sm font-mono font-semibold" style={{ color: barColor }}>
-              ₹{budget.used.toLocaleString("en-IN")}
-              <span className="text-[var(--text-muted)] font-normal"> / ₹{budget.limit.toLocaleString("en-IN")}</span>
-            </span>
+        <div className="gauge-block">
+          <div className="gauge-top">
+            <span>budget used, this workflow</span>
+            <strong>₹{budget.used.toLocaleString("en-IN")} / ₹{budget.limit.toLocaleString("en-IN")}</strong>
+          </div>
+          <div className="gauge-track">
+            <div className={`gauge-fill ${gaugeClass}`} style={{ width: `${Math.min(pct, 100)}%` }} />
           </div>
         </div>
 
-        {/* Agent Wallet meter — separate from Budget above: this is the
-            agent's own standing financial authority, not this workflow's
-            spending cap */}
-        <WalletPanel liveState={liveWalletState} />
-
-        {/* Policy rules — click-to-expand, static */}
-        <PolicyPanel />
-
-        {/* Connection status */}
-        <div className="flex items-center gap-1.5">
-          <div className={`w-2 h-2 rounded-full ${connected ? "bg-[var(--green)]" : "bg-[var(--red)]"}`} />
-          <span className="text-xs text-[var(--text-muted)]">{connected ? "Live" : "Disconnected"}</span>
+        <div>
+          <div className="wallet-card">
+            <div className="wc-row-top">
+              <div className="wc-chip" />
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.6">
+                <path d="M8.5 15.5a5 5 0 0 1 0-7" />
+                <path d="M5.5 18.5a9 9 0 0 1 0-13" />
+              </svg>
+            </div>
+            <div className="wc-number">•••• •••• •••• {(workflowId || "0000").slice(-4).padStart(4, "0")}</div>
+            <div className="wc-row-bottom">
+              <div>
+                <div className="wc-label">agent</div>
+                <div className="wc-value">{liveWalletState?.agent_id || "primary_agent"}</div>
+              </div>
+              <div>
+                <div className="wc-label">status</div>
+                <div className={`wc-value ${connected ? "live" : "off"}`}>
+                  {connected && <span className="dot" />}{connected ? "live" : "offline"}
+                </div>
+              </div>
+            </div>
+            <div className="wc-brand">RevertX</div>
+          </div>
         </div>
-
-        {onNewRun && (
-          <button
-            className="text-xs border border-[var(--border)] rounded px-3 py-1.5 hover:border-[var(--blue)] hover:text-[var(--blue)]"
-            onClick={onNewRun}
-          >
-            New run
-          </button>
-        )}
       </div>
-    </div>
+
+      <PolicyDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} walletState={liveWalletState} />
+    </>
   );
 }

@@ -20,49 +20,32 @@ export default function MetricsBar({ metrics }) {
   }, []);
 
   return (
-    <div
-      className="flex items-center justify-around px-6 py-2 border-t border-[var(--border)] bg-[var(--bg-secondary)] shrink-0"
-      title="From last run of test_harness/run_batch_eval.py (50 records)"
-    >
-      {/* Phase 9.2 — headline recovery metric */}
-      <div className="text-center">
-        <div className="text-2xl font-bold font-mono" style={{ color: "#d29922" }}>
+    <div className="receipt" title="From last run of test_harness/run_batch_eval.py (50 records)">
+      <div className="receipt-cell">
+        <div className="label">auto-recovered, this session</div>
+        <div className="value gold">
           ₹{recovery.total_recovered_inr.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
         </div>
-        <div className="text-xs text-[var(--text-muted)]">Auto-recovered</div>
-        <div className="text-xs" style={{ color: "#d29922" }}>
+        <div className="label" style={{ marginTop: 4, marginBottom: 0 }}>
           {recovery.disputes_resolved} dispute{recovery.disputes_resolved !== 1 ? "s" : ""} resolved
         </div>
       </div>
-
-      <div className="w-px h-8 bg-[var(--border)]" />
-      <Metric label="Match Rate" value={fmt(matchRate)} color="#3fb950" />
-      <div className="w-px h-8 bg-[var(--border)]" />
-      <Metric label="Mismatch Detection" value={fmt(mismatchDetectionRate)} color="#58a6ff" />
-      <div className="w-px h-8 bg-[var(--border)]" />
-      <Metric
-        label="False-Dispute Rate ★"
-        value={fmt(falseDisputeRate)}
-        color={falseDisputeRate === 0 ? "#3fb950" : "#f85149"}
-        subtitle="must be 0.0%"
-      />
-      <div className="w-px h-8 bg-[var(--border)]" />
-      <div className="text-xs text-[var(--text-muted)] text-center">
-        <div className="font-semibold text-white">{totalRecords} records</div>
-        <div>batch eval</div>
+      <div className="receipt-cell">
+        <div className="label">match rate</div>
+        <div className="value green">{fmt(matchRate)}</div>
       </div>
-    </div>
-  );
-}
-
-function Metric({ label, value, color, subtitle }) {
-  return (
-    <div className="text-center">
-      <div className="text-2xl font-bold font-mono" style={{ color }}>
-        {value}
+      <div className="receipt-cell">
+        <div className="label">mismatch detection</div>
+        <div className="value gold">{fmt(mismatchDetectionRate)}</div>
       </div>
-      <div className="text-xs text-[var(--text-muted)]">{label}</div>
-      {subtitle && <div className="text-xs" style={{ color }}>{subtitle}</div>}
+      <div className="receipt-cell">
+        <div className="label">false-dispute rate — must be 0.0%</div>
+        <div className={`value ${falseDisputeRate === 0 ? "green" : "coral"}`}>{fmt(falseDisputeRate)}</div>
+      </div>
+      <div className="receipt-cell">
+        <div className="label">records, batch eval</div>
+        <div className="value">{totalRecords}</div>
+      </div>
     </div>
   );
 }

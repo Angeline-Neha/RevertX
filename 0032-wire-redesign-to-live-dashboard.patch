@@ -1,0 +1,724 @@
+diff --git a/dashboard/index.html b/dashboard/index.html
+index 2f5b416..e8ee66c 100644
+--- a/dashboard/index.html
++++ b/dashboard/index.html
+@@ -3,7 +3,10 @@
+   <head>
+     <meta charset="UTF-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+-    <title>Aegis - Fault-Isolated Saga Orchestrator</title>
++    <title>RevertX — ledger view</title>
++    <link rel="preconnect" href="https://fonts.googleapis.com">
++    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
++    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+   </head>
+   <body>
+     <div id="root"></div>
+diff --git a/dashboard/src/App.jsx b/dashboard/src/App.jsx
+index 0bfc284..3001880 100644
+--- a/dashboard/src/App.jsx
++++ b/dashboard/src/App.jsx
+@@ -493,7 +493,7 @@ export default function App() {
+   if (!workflowId) {
+     return (
+       <div className="flex flex-col items-center justify-center min-h-screen gap-4 py-8">
+-        <div className="text-3xl">🛡️ Aegis</div>
++        <span className="wordmark" style={{ fontSize: 40 }}>RevertX</span>
+ 
+         <TriggerPanel onLaunched={(wid) => connect(wid)} />
+ 
+@@ -507,10 +507,7 @@ export default function App() {
+             onChange={(e) => setInputId(e.target.value)}
+             onKeyDown={(e) => e.key === "Enter" && connect()}
+           />
+-          <button
+-            className="bg-[var(--blue)] text-black font-semibold px-4 py-2 rounded text-sm hover:opacity-90"
+-            onClick={() => connect()}
+-          >
++          <button className="ledger-btn primary" onClick={() => connect()}>
+             Connect
+           </button>
+         </div>
+diff --git a/dashboard/src/components/AgentTerminal.jsx b/dashboard/src/components/AgentTerminal.jsx
+index e6e349e..24c0894 100644
+--- a/dashboard/src/components/AgentTerminal.jsx
++++ b/dashboard/src/components/AgentTerminal.jsx
+@@ -8,35 +8,31 @@ export default function AgentTerminal({ lines }) {
+   }, [lines]);
+ 
+   return (
+-    <div className="w-72 shrink-0 flex flex-col border-r border-[var(--border)] bg-[var(--bg-panel)]">
+-      <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] border-b border-[var(--border)] uppercase tracking-wider">
+-        Primary Agent Log
++    <div className="w-72 shrink-0 flex flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)]">
++      <div className="panel-head">
++        <span className="dot" style={{ background: "var(--blue)" }} />
++        <span className="title">Trace log</span>
++        <span className="dim">{lines.length}</span>
+       </div>
+-      <div
+-        ref={ref}
+-        className="flex-1 overflow-y-auto px-3 py-2 font-mono text-xs leading-5 text-[var(--text-primary)]"
+-      >
++      <div ref={ref} className="flex-1 overflow-y-auto font-mono text-xs">
+         {lines.length === 0 && (
+-          <div className="text-[var(--text-muted)] italic">Waiting for events...</div>
++          <div className="text-[var(--text-muted)] italic px-3.5 py-2">waiting for a run…</div>
+         )}
+-        {lines.map((line, i) => (
+-          <div
+-            key={i}
+-            className={
+-              line.includes("✗") || line.includes("EXCEEDED") || line.includes("CRASHED")
+-                ? "text-[var(--red)]"
+-                : line.includes("✓") || line.includes("settled")
+-                ? "text-[var(--green)]"
+-                : line.includes("⚠") || line.includes("halted")
+-                ? "text-[var(--yellow)]"
+-                : line.includes("🛡") || line.includes("★") || line.includes("[Aegis")
+-                ? "text-[var(--blue)]"
+-                : "text-[var(--text-primary)]"
+-            }
+-          >
+-            {line}
+-          </div>
+-        ))}
++        {lines.map((line, i) => {
++          const cls =
++            line.includes("✗") || line.includes("EXCEEDED") || line.includes("CRASHED")
++              ? "entry is-fail"
++              : line.includes("✓") || line.includes("settled")
++              ? "entry is-pass"
++              : line.includes("⚠") || line.includes("halted")
++              ? "entry is-warn"
++              : "entry";
++          return (
++            <div key={i} className={cls}>
++              {line}
++            </div>
++          );
++        })}
+       </div>
+     </div>
+   );
+diff --git a/dashboard/src/components/MetricsBar.jsx b/dashboard/src/components/MetricsBar.jsx
+index a6d7c73..295cd6a 100644
+--- a/dashboard/src/components/MetricsBar.jsx
++++ b/dashboard/src/components/MetricsBar.jsx
+@@ -20,49 +20,32 @@ export default function MetricsBar({ metrics }) {
+   }, []);
+ 
+   return (
+-    <div
+-      className="flex items-center justify-around px-6 py-2 border-t border-[var(--border)] bg-[var(--bg-secondary)] shrink-0"
+-      title="From last run of test_harness/run_batch_eval.py (50 records)"
+-    >
+-      {/* Phase 9.2 — headline recovery metric */}
+-      <div className="text-center">
+-        <div className="text-2xl font-bold font-mono" style={{ color: "#d29922" }}>
++    <div className="receipt" title="From last run of test_harness/run_batch_eval.py (50 records)">
++      <div className="receipt-cell">
++        <div className="label">auto-recovered, this session</div>
++        <div className="value gold">
+           ₹{recovery.total_recovered_inr.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+         </div>
+-        <div className="text-xs text-[var(--text-muted)]">Auto-recovered</div>
+-        <div className="text-xs" style={{ color: "#d29922" }}>
++        <div className="label" style={{ marginTop: 4, marginBottom: 0 }}>
+           {recovery.disputes_resolved} dispute{recovery.disputes_resolved !== 1 ? "s" : ""} resolved
+         </div>
+       </div>
+-
+-      <div className="w-px h-8 bg-[var(--border)]" />
+-      <Metric label="Match Rate" value={fmt(matchRate)} color="#3fb950" />
+-      <div className="w-px h-8 bg-[var(--border)]" />
+-      <Metric label="Mismatch Detection" value={fmt(mismatchDetectionRate)} color="#58a6ff" />
+-      <div className="w-px h-8 bg-[var(--border)]" />
+-      <Metric
+-        label="False-Dispute Rate ★"
+-        value={fmt(falseDisputeRate)}
+-        color={falseDisputeRate === 0 ? "#3fb950" : "#f85149"}
+-        subtitle="must be 0.0%"
+-      />
+-      <div className="w-px h-8 bg-[var(--border)]" />
+-      <div className="text-xs text-[var(--text-muted)] text-center">
+-        <div className="font-semibold text-white">{totalRecords} records</div>
+-        <div>batch eval</div>
++      <div className="receipt-cell">
++        <div className="label">match rate</div>
++        <div className="value green">{fmt(matchRate)}</div>
+       </div>
+-    </div>
+-  );
+-}
+-
+-function Metric({ label, value, color, subtitle }) {
+-  return (
+-    <div className="text-center">
+-      <div className="text-2xl font-bold font-mono" style={{ color }}>
+-        {value}
++      <div className="receipt-cell">
++        <div className="label">mismatch detection</div>
++        <div className="value gold">{fmt(mismatchDetectionRate)}</div>
++      </div>
++      <div className="receipt-cell">
++        <div className="label">false-dispute rate — must be 0.0%</div>
++        <div className={`value ${falseDisputeRate === 0 ? "green" : "coral"}`}>{fmt(falseDisputeRate)}</div>
++      </div>
++      <div className="receipt-cell">
++        <div className="label">records, batch eval</div>
++        <div className="value">{totalRecords}</div>
+       </div>
+-      <div className="text-xs text-[var(--text-muted)]">{label}</div>
+-      {subtitle && <div className="text-xs" style={{ color }}>{subtitle}</div>}
+     </div>
+   );
+ }
+diff --git a/dashboard/src/components/PolicyDrawer.jsx b/dashboard/src/components/PolicyDrawer.jsx
+new file mode 100644
+index 0000000..2914f54
+--- /dev/null
++++ b/dashboard/src/components/PolicyDrawer.jsx
+@@ -0,0 +1,80 @@
++import { useState, useEffect } from "react";
++
++// Slide-out policy drawer (ledger redesign) — same real GET /policy call
++// PolicyPanel.jsx used to show in a small popover; wallet limits come from
++// liveWalletState/WalletPanel's one-time fetch, passed down from App.jsx so
++// this drawer doesn't need its own duplicate wallet fetch.
++export default function PolicyDrawer({ open, onClose, walletState }) {
++  const [policy, setPolicy] = useState(null);
++
++  useEffect(() => {
++    if (open && !policy) {
++      fetch("http://localhost:8000/policy")
++        .then((r) => r.json())
++        .then(setPolicy)
++        .catch(() => {});
++    }
++  }, [open, policy]);
++
++  return (
++    <>
++      <div className={`backdrop ${open ? "open" : ""}`} onClick={onClose} />
++      <aside className={`drawer ${open ? "open" : ""}`} aria-hidden={!open}>
++        <div className="drawer-head">
++          <div>
++            <h2>Wallet policy</h2>
++            <p>what governs every payout before it's attempted — read-only</p>
++          </div>
++          <button className="drawer-close" onClick={onClose} aria-label="Close">✕</button>
++        </div>
++
++        <div className="drawer-section">
++          <h3>Spend limits</h3>
++          <p className="desc">Hard ceilings enforced before any transfer leaves the wallet.</p>
++          {walletState ? (
++            <>
++              <div className="kv-row"><span className="k">Per-transaction cap</span><span className="v">₹{walletState.per_txn_limit?.toLocaleString("en-IN")}</span></div>
++              <div className="kv-row"><span className="k">Daily budget</span><span className="v">₹{walletState.daily_limit?.toLocaleString("en-IN")}</span></div>
++              <div className="kv-row"><span className="k">Used today</span><span className="v">₹{walletState.spent_today?.toLocaleString("en-IN")}</span></div>
++              <div className="kv-row"><span className="k">Remaining today</span><span className="v">₹{walletState.remaining_today?.toLocaleString("en-IN")}</span></div>
++            </>
++          ) : (
++            <div className="kv-row"><span className="k">—</span><span className="v">no run connected yet</span></div>
++          )}
++        </div>
++
++        <div className="drawer-section">
++          <h3>Allowed categories</h3>
++          {!policy ? (
++            <div className="desc">Loading…</div>
++          ) : (
++            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
++              {(policy.allowed_categories || []).map((c) => (
++                <span key={c} className="v" style={{ background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 3, padding: "2px 8px", fontSize: 11 }}>{c}</span>
++              ))}
++            </div>
++          )}
++        </div>
++
++        {policy && (
++          <>
++            <div className="drawer-section">
++              <h3>Recipient allowlist</h3>
++              <p className="desc">{policy.recipient_allowlist === null ? "none (unrestricted)" : policy.recipient_allowlist.join(", ") || "—"}</p>
++            </div>
++
++            <div className="drawer-section">
++              <h3>Recipient denylist</h3>
++              <p className="desc">{policy.recipient_denylist.length ? policy.recipient_denylist.join(", ") : "—"}</p>
++            </div>
++
++            <div className="drawer-section" style={{ borderBottom: "none" }}>
++              <h3>Human-approval threshold</h3>
++              <div className="kv-row"><span className="k">Above this, a payout is blocked pre-flight</span><span className="v">₹{policy.human_approval_threshold?.toLocaleString("en-IN")}</span></div>
++            </div>
++          </>
++        )}
++      </aside>
++    </>
++  );
++}
+diff --git a/dashboard/src/components/ReasoningStream.jsx b/dashboard/src/components/ReasoningStream.jsx
+index b8846ed..78f8db1 100644
+--- a/dashboard/src/components/ReasoningStream.jsx
++++ b/dashboard/src/components/ReasoningStream.jsx
+@@ -10,33 +10,28 @@ export default function ReasoningStream({ llmStream, mathLine }) {
+   return (
+     <div className="w-80 shrink-0 flex flex-col border-l border-[var(--border)] bg-[var(--bg-secondary)]">
+       {/* LLM Stream section */}
+-      <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] border-b border-[var(--border)] uppercase tracking-wider flex items-center gap-2">
+-        <span>LLM Reasoning</span>
+-        <span className="text-[#3fb950] text-xs normal-case font-normal">← real token stream</span>
++      <div className="panel-head">
++        <span className="dot" style={{ background: "var(--text-muted)" }} />
++        <span className="title">Reasoning</span>
++        <span className="dim">token stream</span>
+       </div>
+ 
+-      <div
+-        ref={llmRef}
+-        className="flex-1 overflow-y-auto px-3 py-2 font-mono text-xs leading-5 text-[var(--text-primary)]"
+-        style={{ minHeight: 0 }}
+-      >
++      <div ref={llmRef} className="flex-1 overflow-y-auto px-3.5 py-3" style={{ minHeight: 0 }}>
+         {!llmStream && (
+-          <div className="text-[var(--text-muted)] italic">
+-            Waiting for policy extraction call...
+-          </div>
++          <div className="stream-text"><span className="placeholder">waiting for a run…</span></div>
+         )}
+         {llmStream && (
+-          <div className="whitespace-pre-wrap text-[var(--blue)]">{llmStream}</div>
++          <div className="stream-text" style={{ whiteSpace: "pre-wrap" }}>{llmStream}</div>
+         )}
+       </div>
+ 
+       {/* Deterministic math section */}
+-      <div className="border-t border-[var(--border)]">
+-        <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] border-b border-[var(--border)] uppercase tracking-wider flex items-center gap-2">
+-          <span>Deterministic Math</span>
+-          <span className="text-[#d29922] text-xs normal-case font-normal">← no LLM here</span>
++      <div className="math-box" style={{ borderTop: "1px solid var(--border)", padding: 0 }}>
++        <div className="panel-head" style={{ borderBottom: "1px solid var(--border)" }}>
++          <span className="title">Deterministic math</span>
++          <span className="dim">no LLM here</span>
+         </div>
+-        <div className="px-3 py-3 font-mono text-xs">
++        <div className="px-3.5 py-3 font-mono text-xs">
+           {!mathLine && (
+             <div className="text-[var(--text-muted)] italic">Waiting for refund computation...</div>
+           )}
+@@ -47,13 +42,13 @@ export default function ReasoningStream({ llmStream, mathLine }) {
+                 mathLine.isFailSafe
+                   ? {
+                       background: "#2a1f0a",
+-                      border: "1px solid #d29922",
+-                      color: "#d29922",
++                      border: "1px solid var(--blue)",
++                      color: "var(--blue)",
+                     }
+                   : {
+-                      background: "#1a2a1a",
++                      background: "#132119",
+                       border: "1px solid var(--green)",
+-                      color: "#3fb950",
++                      color: "var(--green)",
+                     }
+               }
+             >
+diff --git a/dashboard/src/components/TopBar.jsx b/dashboard/src/components/TopBar.jsx
+index c203f39..12b536f 100644
+--- a/dashboard/src/components/TopBar.jsx
++++ b/dashboard/src/components/TopBar.jsx
+@@ -1,65 +1,97 @@
++import { useState, useEffect } from "react";
+ import BeforeAfterToggle from "./BeforeAfterToggle.jsx";
+-import WalletPanel from "./WalletPanel.jsx";
+-import PolicyPanel from "./PolicyPanel.jsx";
++import PolicyDrawer from "./PolicyDrawer.jsx";
+ 
++// Ledger redesign masthead + hero strip — wired to real data, no canned
++// animation. Budget/connected/liveWalletState all come straight from
++// App.jsx's WebSocket event handling, same as the previous TopBar.
+ export default function TopBar({ workflowId, budget, connected, onNewRun, liveWalletState }) {
++  const [drawerOpen, setDrawerOpen] = useState(false);
++  const [rzpBalance, setRzpBalance] = useState(null);
++
++  useEffect(() => {
++    fetch("http://localhost:8000/razorpay-balance")
++      .then((r) => r.json())
++      .then((d) => setRzpBalance(d.available_balance))
++      .catch(() => {});
++  }, []);
++
+   const pct = budget.limit > 0 ? (budget.used / budget.limit) * 100 : 0;
+-  const barColor = pct > 90 ? "#f85149" : pct > 70 ? "#d29922" : "#3fb950";
++  const gaugeClass = pct > 85 ? "danger" : pct > 60 ? "warn" : "";
+ 
+   return (
+-    <div className="flex items-center justify-between px-4 py-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
+-      <div className="flex items-center gap-3">
+-        <span className="text-xl">🛡️</span>
++    <>
++      <div className="masthead" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24, padding: "12px 16px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
+         <div>
+-          <div className="text-sm font-semibold text-white">Aegis — Fault-Isolated Saga Orchestrator</div>
+-          <div className="text-xs text-[var(--text-muted)] font-mono truncate max-w-xs">{workflowId}</div>
++          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
++            <span className="wordmark">RevertX</span>
++            <span className={`live-pill ${connected ? "" : "off"}`}>
++              <span className="live-dot" />{connected ? "live" : "disconnected"}
++            </span>
++          </div>
++          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
++            fault-isolated saga orchestrator · <span style={{ fontFamily: "var(--mono)" }}>{workflowId}</span>
++          </div>
++        </div>
++        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
++          <BeforeAfterToggle />
++          <button className="ledger-btn" onClick={() => setDrawerOpen(true)}>policy</button>
++          {onNewRun && (
++            <button className="ledger-btn primary" onClick={onNewRun}>new run</button>
++          )}
+         </div>
+       </div>
+ 
+-      <div className="flex items-center gap-6">
+-        {/* Phase 9.1 — Before/After Aegis toggle */}
+-        <BeforeAfterToggle />
+-
+-        {/* Budget meter */}
+-        <div className="text-right">
+-          <div className="text-xs text-[var(--text-muted)] mb-1">Budget</div>
+-          <div className="flex items-center gap-2">
+-            <div className="w-32 h-2 bg-[var(--bg-primary)] rounded-full overflow-hidden">
+-              <div
+-                className="h-full rounded-full transition-all duration-500"
+-                style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: barColor }}
+-              />
+-            </div>
+-            <span className="text-sm font-mono font-semibold" style={{ color: barColor }}>
+-              ₹{budget.used.toLocaleString("en-IN")}
+-              <span className="text-[var(--text-muted)] font-normal"> / ₹{budget.limit.toLocaleString("en-IN")}</span>
+-            </span>
++      <div className="hero-strip">
++        <div className="hero-figure">
++          <div className="label">RazorpayX wallet available</div>
++          <div className="amount">
++            <span className="rupee">₹</span>
++            {rzpBalance !== null ? rzpBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+           </div>
++          {liveWalletState && (
++            <div className="sub">per-transaction limit ₹{liveWalletState.per_txn_limit?.toLocaleString("en-IN")}</div>
++          )}
+         </div>
+ 
+-        {/* Agent Wallet meter — separate from Budget above: this is the
+-            agent's own standing financial authority, not this workflow's
+-            spending cap */}
+-        <WalletPanel liveState={liveWalletState} />
+-
+-        {/* Policy rules — click-to-expand, static */}
+-        <PolicyPanel />
+-
+-        {/* Connection status */}
+-        <div className="flex items-center gap-1.5">
+-          <div className={`w-2 h-2 rounded-full ${connected ? "bg-[var(--green)]" : "bg-[var(--red)]"}`} />
+-          <span className="text-xs text-[var(--text-muted)]">{connected ? "Live" : "Disconnected"}</span>
++        <div className="gauge-block">
++          <div className="gauge-top">
++            <span>budget used, this workflow</span>
++            <strong>₹{budget.used.toLocaleString("en-IN")} / ₹{budget.limit.toLocaleString("en-IN")}</strong>
++          </div>
++          <div className="gauge-track">
++            <div className={`gauge-fill ${gaugeClass}`} style={{ width: `${Math.min(pct, 100)}%` }} />
++          </div>
+         </div>
+ 
+-        {onNewRun && (
+-          <button
+-            className="text-xs border border-[var(--border)] rounded px-3 py-1.5 hover:border-[var(--blue)] hover:text-[var(--blue)]"
+-            onClick={onNewRun}
+-          >
+-            New run
+-          </button>
+-        )}
++        <div>
++          <div className="wallet-card">
++            <div className="wc-row-top">
++              <div className="wc-chip" />
++              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.6">
++                <path d="M8.5 15.5a5 5 0 0 1 0-7" />
++                <path d="M5.5 18.5a9 9 0 0 1 0-13" />
++              </svg>
++            </div>
++            <div className="wc-number">•••• •••• •••• {(workflowId || "0000").slice(-4).padStart(4, "0")}</div>
++            <div className="wc-row-bottom">
++              <div>
++                <div className="wc-label">agent</div>
++                <div className="wc-value">{liveWalletState?.agent_id || "primary_agent"}</div>
++              </div>
++              <div>
++                <div className="wc-label">status</div>
++                <div className={`wc-value ${connected ? "live" : "off"}`}>
++                  {connected && <span className="dot" />}{connected ? "live" : "offline"}
++                </div>
++              </div>
++            </div>
++            <div className="wc-brand">RevertX</div>
++          </div>
++        </div>
+       </div>
+-    </div>
++
++      <PolicyDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} walletState={liveWalletState} />
++    </>
+   );
+ }
+diff --git a/dashboard/src/components/WorkflowGraph.jsx b/dashboard/src/components/WorkflowGraph.jsx
+index 9c77a39..2ea3043 100644
+--- a/dashboard/src/components/WorkflowGraph.jsx
++++ b/dashboard/src/components/WorkflowGraph.jsx
+@@ -11,16 +11,16 @@ import { motion } from "framer-motion";
+ import EvidencePopover from "./EvidencePopover.jsx";
+ 
+ const STATUS_STYLES = {
+-  pending:     { bg: "#484f58", border: "#484f58", text: "#c9d1d9", icon: "○" },
+-  in_progress: { bg: "#1a2332", border: "#58a6ff", text: "#58a6ff", icon: "◌", pulse: true },
+-  success:     { bg: "#1a3320", border: "#3fb950", text: "#3fb950", icon: "✓" },
+-  failed:      { bg: "#2d1a1a", border: "#f85149", text: "#f85149", icon: "✗" },
+-  skipped:     { bg: "#2a2a2a", border: "#484f58", text: "#8b949e", icon: "—" },
++  pending:     { bg: "#1c2436", border: "#2a3349", text: "#7c8399", icon: "○" },
++  in_progress: { bg: "#1c2436", border: "#dba955", text: "#dba955", icon: "◌", pulse: true },
++  success:     { bg: "#1c2436", border: "#5fb489", text: "#5fb489", icon: "✓" },
++  failed:      { bg: "#1c2436", border: "#e3654c", text: "#e3654c", icon: "✗" },
++  skipped:     { bg: "#1c2436", border: "#2a3349", text: "#565e74", icon: "—" },
+   // Phase 2/5/6 — a payout held at "pending" (non_terminal poll result, or
+   // Preset 2's forced demo hold) is genuinely unconfirmed, not a failure —
+   // same ⏳ language as the human_escalation_required banner. Distinct from
+   // both `pending` above (hasn't run yet) and `failed` (confirmed dead).
+-  held:        { bg: "#332a14", border: "#d29922", text: "#d29922", icon: "⏳" },
++  held:        { bg: "#1c2436", border: "#dba955", text: "#dba955", icon: "⏳" },
+ };
+ 
+ // Feature D — confidence/"evaluating" flicker. While a node is in_progress
+@@ -237,11 +237,13 @@ export default function WorkflowGraph({
+   }
+ 
+   return (
+-    <div className="flex-1 relative" style={{ background: "#0d1117" }}>
+-      <div className="px-3 py-2 text-xs font-semibold text-[var(--text-muted)] border-b border-[var(--border)] uppercase tracking-wider bg-[var(--bg-secondary)]">
+-        Workflow Graph
++    <div className="flex-1 relative" style={{ background: "var(--bg-primary)" }}>
++      <div className="panel-head" style={{ background: "var(--bg-secondary)" }}>
++        <span className="dot" style={{ background: "var(--violet)" }} />
++        <span className="title">Workflow</span>
++        <span className="dim">{merchants.length + compensationNodes.length} nodes</span>
+       </div>
+-      <div style={{ height: "calc(100% - 32px)" }}>
++      <div style={{ height: "calc(100% - 33px)" }}>
+         <ReactFlow
+           nodes={nodes}
+           edges={edges}
+@@ -251,8 +253,8 @@ export default function WorkflowGraph({
+           fitViewOptions={{ padding: 0.3 }}
+           proOptions={{ hideAttribution: true }}
+         >
+-          <Background color="#30363d" gap={20} />
+-          <Controls style={{ background: "#161b22", border: "1px solid #30363d" }} />
++          <Background color="#2a3349" gap={20} />
++          <Controls style={{ background: "#1c2436", border: "1px solid #2a3349" }} />
+         </ReactFlow>
+       </div>
+       {popover}
+diff --git a/dashboard/src/index.css b/dashboard/src/index.css
+index 44ef864..c6c806b 100644
+--- a/dashboard/src/index.css
++++ b/dashboard/src/index.css
+@@ -2,18 +2,36 @@
+ @tailwind components;
+ @tailwind utilities;
+ 
++/* ---------------------------------------------------------------
++   Ledger theme (redesign-mockup.html, wired to real data).
++   Existing components reference --bg-primary/--bg-secondary/
++   --text-primary/--text-muted/--border/--blue/--green/--red/
++   --yellow via Tailwind arbitrary values — remapping them here
++   reskins WorkflowGraph, EndStatePanel, EvidencePopover, WalletPanel,
++   PolicyPanel, TriggerPanel, MetricsBar and AgentTerminal without
++   touching their logic.
++------------------------------------------------------------------ */
+ :root {
+-  --bg-primary: #0d1117;
+-  --bg-secondary: #161b22;
+-  --bg-panel: #0a0e14;
+-  --text-primary: #c9d1d9;
+-  --text-muted: #8b949e;
+-  --border: #30363d;
+-  --blue: #58a6ff;
+-  --green: #3fb950;
+-  --red: #f85149;
++  --bg-primary: #10141d;     /* ink */
++  --bg-secondary: #161d2c;   /* surface */
++  --bg-panel: #1c2436;       /* raised */
++  --raised-2: #212a40;
++  --text-primary: #ece7db;   /* paper */
++  --text-muted: #7c8399;     /* muted */
++  --text-muted-2: #565e74;
++  --border: #2a3349;         /* line */
++  --border-soft: #202939;
++  --blue: #dba955;           /* gold — primary accent */
++  --gold-2: #f0d19c;
++  --green: #5fb489;
++  --red: #e3654c;            /* coral */
+   --gray: #484f58;
+-  --yellow: #d29922;
++  --yellow: #dba955;         /* gold doubles as warn accent */
++  --violet: #8b93f0;
++
++  --serif: 'Fraunces', 'Iowan Old Style', serif;
++  --mono: 'JetBrains Mono', ui-monospace, monospace;
++  --radius: 3px;
+ }
+ 
+ * { box-sizing: border-box; }
+@@ -21,8 +39,10 @@
+ body {
+   margin: 0;
+   background-color: var(--bg-primary);
++  background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.035) 1px, transparent 0);
++  background-size: 28px 28px;
+   color: var(--text-primary);
+-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
++  font-family: var(--mono);
+   overflow: hidden;
+   height: 100vh;
+ }
+@@ -31,11 +51,120 @@ body {
+ ::-webkit-scrollbar-track { background: var(--bg-primary); }
+ ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+ 
+-.node-pulse {
+-  animation: pulse-border 1.5s ease-in-out infinite;
++.node-pulse { animation: pulse-border 1.5s ease-in-out infinite; }
++@keyframes pulse-border {
++  0%, 100% { box-shadow: 0 0 0 0 rgba(219,169,85,0.4); }
++  50% { box-shadow: 0 0 0 6px rgba(219,169,85,0); }
+ }
+ 
+-@keyframes pulse-border {
+-  0%, 100% { box-shadow: 0 0 0 0 rgba(88, 166, 255, 0.4); }
+-  50% { box-shadow: 0 0 0 6px rgba(88, 166, 255, 0); }
++/* ---------------- masthead / wordmark ---------------- */
++.wordmark {
++  font-family: var(--serif); font-weight: 700; font-size: 26px;
++  letter-spacing: -0.015em; font-variation-settings: "opsz" 60;
++  background: linear-gradient(120deg, var(--gold-2) 0%, var(--text-primary) 55%, var(--text-muted-2) 100%);
++  -webkit-background-clip: text; background-clip: text; color: transparent;
++}
++.live-pill {
++  display:inline-flex; align-items:center; gap:6px; font-size: 11px; color: var(--green);
++  border: 1px solid #5fb48922; background: #5fb48922; padding: 3px 9px 3px 7px; border-radius: 20px;
++}
++.live-pill.off { color: var(--red); border-color: #e3654c22; background: #e3654c22; }
++.live-dot { width:6px; height:6px; border-radius:50%; background: currentColor; box-shadow: 0 0 0 0 rgba(95,180,137,0.6); animation: livepulse 2s infinite; }
++@keyframes livepulse {
++  0%{ box-shadow: 0 0 0 0 rgba(95,180,137,0.5); } 70%{ box-shadow: 0 0 0 6px rgba(95,180,137,0); } 100%{ box-shadow: 0 0 0 0 rgba(95,180,137,0); }
++}
++
++.ledger-btn {
++  font-family: var(--mono); font-size: 12px; color: var(--text-primary);
++  background: var(--bg-panel); border: 1px solid var(--border); padding: 7px 12px; border-radius: var(--radius);
++  cursor: pointer; transition: border-color .15s ease, background .15s ease;
++}
++.ledger-btn:hover { border-color: var(--text-muted-2); background: var(--raised-2); }
++.ledger-btn.primary { background: var(--blue); border-color: var(--blue); color: #1a1508; font-weight: 600; }
++.ledger-btn.primary:hover { background: #e8bb6c; }
++.ledger-btn:disabled { opacity: .4; cursor: not-allowed; }
++
++.toggle { display:inline-flex; align-items:center; gap:8px; font-size: 12px; color: var(--text-muted); }
++
++/* ---------------- hero strip ---------------- */
++.hero-strip { display:grid; grid-template-columns: auto 1fr auto; gap: 28px; align-items:center; padding: 14px 16px; border-bottom: 1px solid var(--border); }
++@media (max-width: 900px){ .hero-strip{ grid-template-columns: 1fr; } }
++.hero-figure .label { font-size: 10.5px; color: var(--text-muted); margin-bottom: 3px; }
++.hero-figure .amount { font-family: var(--serif); font-weight: 600; font-size: 30px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
++.hero-figure .amount .rupee { color: var(--blue); }
++.hero-figure .sub { font-size: 10.5px; color: var(--text-muted-2); margin-top: 2px; }
++
++.gauge-block { min-width: 220px; }
++.gauge-top { display:flex; justify-content:space-between; align-items:baseline; font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
++.gauge-top strong { color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
++.gauge-track { height: 6px; border-radius: 20px; background: var(--bg-panel); border: 1px solid var(--border); overflow: hidden; }
++.gauge-fill { height: 100%; border-radius: 20px; background: linear-gradient(90deg, var(--green), var(--blue)); transition: width 1.1s cubic-bezier(.2,.8,.2,1), background .4s ease; }
++.gauge-fill.warn { background: linear-gradient(90deg, var(--blue), #e39a4c); }
++.gauge-fill.danger { background: linear-gradient(90deg, var(--red), #b3402c); }
++
++.wallet-card {
++  width: 250px; aspect-ratio: 1.586; border-radius: 14px; padding: 15px 17px; position: relative; overflow: hidden;
++  background: radial-gradient(120% 140% at 100% 0%, #2c3654 0%, transparent 55%), linear-gradient(155deg, #202a42 0%, #12161f 70%);
++  border: 1px solid #313c58; box-shadow: 0 16px 32px -10px rgba(0,0,0,0.55);
++  display:flex; flex-direction:column; justify-content:space-between;
++}
++.wc-row-top { display:flex; align-items:flex-start; justify-content:space-between; }
++.wc-chip { width: 30px; height: 23px; border-radius: 5px; background: linear-gradient(145deg, var(--gold-2), var(--blue) 60%, #a9793a); }
++.wc-number { font-family: var(--mono); font-size: 14px; letter-spacing: 0.08em; color: var(--text-primary); font-weight: 500; margin: 10px 0 2px; }
++.wc-row-bottom { display:flex; justify-content:space-between; align-items:flex-end; }
++.wc-label { font-size: 8.5px; color: var(--text-muted); margin-bottom: 2px; }
++.wc-value { font-size: 11.5px; color: #b9b3a2; font-weight: 500; }
++.wc-value.live { color: var(--green); }
++.wc-value.live .dot { display:inline-block; width:5px; height:5px; border-radius:50%; background: var(--green); margin-right:5px; animation: livepulse 2s infinite; }
++.wc-value.off { color: var(--red); }
++.wc-brand { position: absolute; right: 15px; bottom: 13px; font-family: var(--serif); font-weight: 700; font-style: italic; font-size: 13px; color: var(--gold-2); opacity: 0.9; }
++
++/* ---------------- board / panel-head (shared by side panels) ---------------- */
++.panel-head { display:flex; align-items:center; gap:8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--text-muted); text-transform: none; }
++.panel-head .dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
++.panel-head .title { flex:1; font-weight: 600; }
++.panel-head .dim { color: var(--text-muted-2); }
++
++/* ---- trace log (AgentTerminal reused as trace panel) ---- */
++.entry { position: relative; padding: 8px 14px; border-left: 2px solid transparent; font-size: 11.5px; line-height: 1.6; }
++.entry.is-pass { border-left-color: var(--green); }
++.entry.is-fail { border-left-color: var(--red); background: rgba(227,101,76,0.06); }
++.entry.is-warn { border-left-color: var(--blue); background: rgba(219,169,85,0.05); }
++
++/* ---- reasoning / math rail ---- */
++.stream-text { font-family: var(--serif); font-style: italic; font-size: 13.5px; color: #b9b3a2; line-height: 1.6; }
++.stream-text .placeholder { color: var(--text-muted-2); font-style: italic; }
++.math-box { border-top: 1px solid var(--border); padding: 12px 14px 14px; }
++
++/* ---------------- footer ledger strip ---------------- */
++.receipt { display:grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid var(--border); background: var(--bg-secondary); }
++@media (max-width: 780px){ .receipt{ grid-template-columns: repeat(2, 1fr); } }
++.receipt-cell { padding: 10px 16px; border-right: 1px dashed var(--border-soft); }
++.receipt-cell:last-child { border-right:none; }
++.receipt-cell .label { font-size: 9.5px; color: var(--text-muted); margin-bottom: 4px; }
++.receipt-cell .value { font-family: var(--serif); font-weight: 600; font-size: 19px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
++.receipt-cell .value.green { color: var(--green); }
++.receipt-cell .value.gold { color: var(--blue); }
++.receipt-cell .value.coral { color: var(--red); }
++
++/* ---------------- policy drawer ---------------- */
++.backdrop { position: fixed; inset:0; background: rgba(8,10,15,0.6); backdrop-filter: blur(2px); opacity: 0; pointer-events:none; transition: opacity .25s ease; z-index: 70; }
++.backdrop.open { opacity: 1; pointer-events:auto; }
++.drawer {
++  position: fixed; top:0; right:0; height:100%; width: min(440px, 92vw); background: var(--bg-secondary);
++  border-left: 1px solid var(--border); transform: translateX(100%); transition: transform .3s cubic-bezier(.2,.8,.2,1);
++  z-index: 71; display:flex; flex-direction:column; overflow-y:auto;
+ }
++.drawer.open { transform: translateX(0); }
++.drawer-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--border); display:flex; align-items:flex-start; justify-content:space-between; gap: 12px; }
++.drawer-head h2 { font-family: var(--serif); font-weight: 600; font-size: 20px; margin: 0 0 4px; color: var(--text-primary); }
++.drawer-head p { margin:0; font-size: 11.5px; color: var(--text-muted); }
++.drawer-close { background: none; border: 1px solid var(--border); color: var(--text-muted); border-radius: var(--radius); width: 26px; height:26px; cursor:pointer; flex-shrink:0; }
++.drawer-close:hover { color: var(--text-primary); border-color: var(--text-muted-2); }
++.drawer-section { padding: 16px 20px; border-bottom: 1px solid var(--border-soft); }
++.drawer-section h3 { font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--blue); margin: 0 0 4px; }
++.drawer-section .desc { font-size: 11px; color: var(--text-muted); margin: 0 0 10px; line-height:1.5; }
++.kv-row { display:flex; justify-content:space-between; align-items:baseline; padding: 6px 0; border-top: 1px dashed var(--border-soft); font-size: 11.5px; }
++.kv-row:first-of-type { border-top:none; }
++.kv-row .k { color: #b9b3a2; }
++.kv-row .v { color: var(--text-primary); font-variant-numeric: tabular-nums; font-weight: 500; }

@@ -19,6 +19,21 @@ PG_PORT = os.getenv("PG_PORT", "5433")
 
 DSN = f"postgresql://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
 
+# AsyncPostgresSaver (compensating_agent/worker.py) holds ONE Postgres
+# connection open for the worker's entire process lifetime — unlike every
+# other DSN use above, which opens/closes per call via pool.acquire() or a
+# fresh psycopg2.connect(). An idle long-lived connection through Docker
+# Desktop's NAT (Windows/WSL2) gets silently dropped after a few minutes of
+# inactivity; the next checkpoint read/write then fails with libpq's
+# "consuming input failed: could not receive data from server: Software
+# caused connection abort (WSAECONNABORTED/10053)" — exactly the failure
+# mode that killed a compensation run before its first node even started
+# (aget_state() in run_compensation() is the first thing that touches this
+# connection). These are standard libpq keepalive params: probe every 20s
+# after 20s idle, give up after 3 missed probes (~1 min to detect a dead
+# socket instead of finding out only when a real checkpoint write needs it).
+CHECKPOINTER_DSN = f"{DSN}?keepalives=1&keepalives_idle=20&keepalives_interval=20&keepalives_count=3"
+
 pool: asyncpg.Pool | None = None
 
 async def run_migrations() -> None:

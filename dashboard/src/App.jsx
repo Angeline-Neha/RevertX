@@ -493,7 +493,7 @@ export default function App() {
   if (!workflowId) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-4 py-8">
-        <div className="text-3xl">🛡️ Aegis</div>
+        <span className="wordmark" style={{ fontSize: 40 }}>RevertX</span>
 
         <TriggerPanel onLaunched={(wid) => connect(wid)} />
 
@@ -507,10 +507,7 @@ export default function App() {
             onChange={(e) => setInputId(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && connect()}
           />
-          <button
-            className="bg-[var(--blue)] text-black font-semibold px-4 py-2 rounded text-sm hover:opacity-90"
-            onClick={() => connect()}
-          >
+          <button className="ledger-btn primary" onClick={() => connect()}>
             Connect
           </button>
         </div>
