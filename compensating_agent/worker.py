@@ -17,7 +17,7 @@ behavioral proof.
 import asyncio
 import json
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 import aio_pika
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -49,8 +49,12 @@ async def process_message(
         # problem (Postgres actually down), not a transient idle-drop, so
         # it's reported normally rather than retried again.
         for attempt in (1, 2):
-            _, graph = await get_graph(fresh=attempt == 2)
+            graph = None
             try:
+                # Build the graph inside the retry boundary too.  Re-opening
+                # a checkpointer can fail independently of the graph run when
+                # Postgres has dropped an idle socket.
+                _, graph = await get_graph(fresh=attempt == 2)
                 result = await run_compensation(wid, failing_step, graph=graph)
                 publish_event(wid, "compensation_complete", {
                     "workflow_id": wid,
@@ -64,6 +68,45 @@ async def process_message(
                 if attempt == 1 and is_conn_error:
                     logger.warning(f"Checkpointer connection looks dead ({exc}) — rebuilding and retrying once for {wid}")
                     continue
+
+                # A dead checkpoint socket can still be unrecoverable on
+                # Windows/Docker even after opening a replacement (for
+                # example while the container is restarting). Compensation
+                # must not be abandoned merely because persistence is down:
+                # run this one saga without a checkpointer, then let the next
+                # message use the normal durable path after the database is
+                # healthy again. This is safe here because the failure is
+                # before the first compensation node; no refund has been
+                # attempted yet.
+                if attempt == 2 and is_conn_error and (
+                    graph is None or "checkpoint preflight failed" in str(exc).lower()
+                ):
+                    logger.warning(
+                        "Checkpoint persistence unavailable for %s; "
+                        "running compensation without a checkpointer", wid
+                    )
+                    try:
+                        result = await run_compensation(
+                            wid, failing_step, graph=build_graph()
+                        )
+                        publish_event(wid, "compensation_complete", {
+                            "workflow_id": wid,
+                            "has_udir": result.get("udir_payload") is not None,
+                            "has_liability_report": result.get("liability_report") is not None,
+                            "degraded": True,
+                        })
+                        logger.warning("Compensation complete in degraded mode for %s", wid)
+                        return
+                    except Exception as fallback_exc:
+                        logger.exception("Degraded compensation also failed for %s", wid)
+                        publish_event(wid, "compensation_error", {
+                            "error": (
+                                f"Checkpointed run failed ({type(exc).__name__}: {exc}); "
+                                f"non-checkpointed fallback failed "
+                                f"({type(fallback_exc).__name__}: {fallback_exc})"
+                            ),
+                        })
+                        return
                 publish_event(wid, "compensation_error", {"error": str(exc)})
                 logger.error(f"Compensation error for {wid}: {exc}")
                 return
@@ -93,8 +136,18 @@ async def main() -> None:
     state = {"checkpointer": None, "graph": None}
 
     async def get_graph(fresh: bool = False):
+        nonlocal stack
         if fresh and state["checkpointer"] is not None:
-            await stack.aclose()
+            # The connection may already be dead, so closing its context can
+            # itself raise the same "connection is closed" exception that
+            # triggered recovery. Cleanup must never prevent replacement.
+            with suppress(Exception):
+                await stack.aclose()
+            # AsyncExitStack is single-use: once aclose() has been called it
+            # cannot safely accept a new context.  Reusing the closed stack
+            # made the intended stale-connection recovery fail with the same
+            # "connection is closed" error it was supposed to repair.
+            stack = AsyncExitStack()
             state["checkpointer"] = None
         if state["checkpointer"] is None:
             checkpointer = await stack.enter_async_context(

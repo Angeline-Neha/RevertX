@@ -756,7 +756,14 @@ async def run_compensation(
     config = {"configurable": {"thread_id": workflow_id}}
 
     if g.checkpointer is not None:
-        existing = await g.aget_state(config)
+        try:
+            existing = await g.aget_state(config)
+        except Exception as exc:
+            # Keep this distinguishable from a node failure. The worker may
+            # safely use a non-checkpointed fallback only here, before the
+            # first compensation node can issue a refund; doing that after a
+            # partial graph run could repeat a refund.
+            raise RuntimeError(f"checkpoint preflight failed: {exc}") from exc
         if existing and existing.values:
             # A checkpoint already exists for this workflow_id — a prior
             # attempt got partway through. Passing None as input resumes

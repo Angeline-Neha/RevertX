@@ -307,6 +307,13 @@ export default function App() {
 
       case "math_computation":
         setMathLine({ formula: data.formula, isFailSafe: !!data.is_fail_safe });
+        if (data.is_fail_safe) {
+          setLlmStream((prev) => prev ||
+            "No LLM token stream for this step.\n\n" +
+            "The merchant policy could not be reached, so Aegis used its " +
+            "fail-safe path without calling the LLM."
+          );
+        }
         log(`  [Math] ${data.formula}`);
         setCompensationEvidence((prev) => ({
           ...prev,
@@ -347,6 +354,9 @@ export default function App() {
         break;
 
       case "compensation_error":
+        setLlmStream((prev) => prev ||
+          `LLM reasoning unavailable: compensation stopped before policy extraction.\n\n${data.error}`
+        );
         log(`✗ Aegis compensation ERROR: ${data.error}`);
         break;
 
