@@ -568,7 +568,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="flex flex-col h-screen overflow-hidden app-shell">
       <TopBar
         workflowId={workflowId}
         budget={budget}
@@ -577,12 +577,20 @@ export default function App() {
         liveWalletState={liveWalletState}
       />
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left — Agent Terminal */}
-        <AgentTerminal lines={terminalLines} />
+      <div className="deck-command-strip">
+        <span className="strip-title">LIVE OPERATION / SAGA CONTROL</span>
+        <span className="strip-route">PRIMARY AGENT <b>→</b> MERCHANT NETWORK <b>→</b> RECONCILIATION <b>→</b> AEGIS RECOVERY</span>
+        <span className="strip-clock">{connected ? "LINK STABLE" : "AWAITING LINK"}</span>
+      </div>
 
-        {/* Center — Workflow Graph */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="deck-body">
+        <aside className="deck-rail deck-rail-left">
+          <div className="rail-label">01 / EVENT FEED</div>
+          <AgentTerminal lines={terminalLines} />
+        </aside>
+
+        <main className="deck-stage">
+          <div className="stage-toolbar"><span><i className="stage-dot" /> WORKFLOW CANVAS</span><span className="stage-mode">LIVE GRAPH / AUTO-FIT</span></div>
           <WorkflowGraph
             merchants={merchants}
             nodeStates={nodeStates}
@@ -590,10 +598,12 @@ export default function App() {
             paymentEvidence={paymentEvidence}
             compensationEvidence={compensationEvidence}
           />
-        </div>
+        </main>
 
-        {/* Right — Reasoning Stream */}
-        <ReasoningStream llmStream={llmStream} mathLine={mathLine} />
+        <aside className="deck-rail deck-rail-right">
+          <div className="rail-label">02 / COGNITIVE TRACE</div>
+          <ReasoningStream llmStream={llmStream} mathLine={mathLine} />
+        </aside>
       </div>
 
       <MetricsBar metrics={BATCH_METRICS} />

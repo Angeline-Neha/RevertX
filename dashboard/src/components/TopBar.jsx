@@ -2,95 +2,37 @@ import { useState, useEffect } from "react";
 import BeforeAfterToggle from "./BeforeAfterToggle.jsx";
 import PolicyDrawer from "./PolicyDrawer.jsx";
 
-// Ledger redesign masthead + hero strip — wired to real data, no canned
-// animation. Budget/connected/liveWalletState all come straight from
-// App.jsx's WebSocket event handling, same as the previous TopBar.
+function Telemetry({ label, value, tone = "cyan" }) {
+  return <div className={`telemetry telemetry-${tone}`}><span className="telemetry-led" /><span className="telemetry-label">{label}</span><strong>{value}</strong></div>;
+}
+
 export default function TopBar({ workflowId, budget, connected, onNewRun, liveWalletState }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [rzpBalance, setRzpBalance] = useState(null);
-
   useEffect(() => {
-    fetch("http://localhost:8000/razorpay-balance")
-      .then((r) => r.json())
-      .then((d) => setRzpBalance(d.available_balance))
-      .catch(() => {});
+    fetch("http://localhost:8000/razorpay-balance").then((r) => r.json()).then((d) => setRzpBalance(d.available_balance)).catch(() => {});
   }, []);
-
   const pct = budget.limit > 0 ? (budget.used / budget.limit) * 100 : 0;
   const gaugeClass = pct > 85 ? "danger" : pct > 60 ? "warn" : "";
-
+  const remaining = liveWalletState?.remaining_today;
+  const dailyLimit = liveWalletState?.daily_limit || 75000;
   return (
     <>
-      <div className="masthead" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24, padding: "12px 16px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-            <span className="wordmark">RevertX</span>
-            <span className={`live-pill ${connected ? "" : "off"}`}>
-              <span className="live-dot" />{connected ? "live" : "disconnected"}
-            </span>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-            fault-isolated saga orchestrator · <span style={{ fontFamily: "var(--mono)" }}>{workflowId}</span>
-          </div>
+      <header className="command-header">
+        <div className="command-brand">
+          <div className="brand-eyebrow"><span className="status-orb" /> AEGIS / AUTONOMOUS RECOVERY NETWORK</div>
+          <div className="brand-row"><span className="wordmark">RevertX</span><span className={`live-pill ${connected ? "" : "off"}`}><span className="live-dot" />{connected ? "live link" : "offline"}</span></div>
+          <div className="workflow-id">RUN // {(workflowId || "awaiting workflow").toUpperCase()}</div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <BeforeAfterToggle />
-          <button className="ledger-btn" onClick={() => setDrawerOpen(true)}>policy</button>
-          {onNewRun && (
-            <button className="ledger-btn primary" onClick={onNewRun}>new run</button>
-          )}
-        </div>
-      </div>
-
-      <div className="hero-strip">
-        <div className="hero-figure">
-          <div className="label">RazorpayX wallet available</div>
-          <div className="amount">
-            <span className="rupee">₹</span>
-            {rzpBalance !== null ? rzpBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
-          </div>
-          {liveWalletState && (
-            <div className="sub">per-transaction limit ₹{liveWalletState.per_txn_limit?.toLocaleString("en-IN")}</div>
-          )}
-        </div>
-
-        <div className="gauge-block">
-          <div className="gauge-top">
-            <span>budget used, this workflow</span>
-            <strong>₹{budget.used.toLocaleString("en-IN")} / ₹{budget.limit.toLocaleString("en-IN")}</strong>
-          </div>
-          <div className="gauge-track">
-            <div className={`gauge-fill ${gaugeClass}`} style={{ width: `${Math.min(pct, 100)}%` }} />
-          </div>
-        </div>
-
-        <div>
-          <div className="wallet-card">
-            <div className="wc-row-top">
-              <div className="wc-chip" />
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.6">
-                <path d="M8.5 15.5a5 5 0 0 1 0-7" />
-                <path d="M5.5 18.5a9 9 0 0 1 0-13" />
-              </svg>
-            </div>
-            <div className="wc-number">•••• •••• •••• {(workflowId || "0000").slice(-4).padStart(4, "0")}</div>
-            <div className="wc-row-bottom">
-              <div>
-                <div className="wc-label">agent</div>
-                <div className="wc-value">{liveWalletState?.agent_id || "primary_agent"}</div>
-              </div>
-              <div>
-                <div className="wc-label">status</div>
-                <div className={`wc-value ${connected ? "live" : "off"}`}>
-                  {connected && <span className="dot" />}{connected ? "live" : "offline"}
-                </div>
-              </div>
-            </div>
-            <div className="wc-brand">RevertX</div>
-          </div>
-        </div>
-      </div>
-
+        <div className="header-telemetry"><Telemetry label="PROXY" value={connected ? "ONLINE" : "WAIT"} tone={connected ? "green" : "warn"} /><Telemetry label="STREAM" value={connected ? "OPEN" : "CLOSED"} tone={connected ? "cyan" : "warn"} /><Telemetry label="AEGIS" value="ARMED" tone="purple" /></div>
+        <div className="command-actions"><BeforeAfterToggle /><button className="ledger-btn" onClick={() => setDrawerOpen(true)}>policy <span className="button-key">P</span></button>{onNewRun && <button className="ledger-btn primary" onClick={onNewRun}>new run <span className="button-key">↗</span></button>}</div>
+      </header>
+      <section className="telemetry-deck">
+        <div className="balance-module"><div className="module-kicker">RAZORPAYX / AVAILABLE BALANCE</div><div className="balance-value"><span>₹</span>{rzpBalance !== null ? rzpBalance.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</div><div className="module-foot">LIVE ACCOUNT SNAPSHOT <i /></div></div>
+        <div className="authority-module"><div className="module-kicker">AGENT AUTHORITY / DAILY WINDOW</div><div className="authority-row"><strong>₹{(remaining ?? dailyLimit).toLocaleString("en-IN")}</strong><span>remaining</span></div><div className="authority-track"><span style={{ width: `${Math.min(remaining != null ? (remaining / dailyLimit) * 100 : 100, 100)}%` }} /></div><div className="module-foot">PER TXN ≤ ₹{(liveWalletState?.per_txn_limit ?? 25000).toLocaleString("en-IN")}</div></div>
+        <div className="mandate-module"><div className="module-kicker">WORKFLOW MANDATE / CURRENT RUN</div><div className="mandate-row"><strong>₹{budget.used.toLocaleString("en-IN")}</strong><span>/ ₹{budget.limit.toLocaleString("en-IN")}</span></div><div className="gauge-track"><div className={`gauge-fill ${gaugeClass}`} style={{ width: `${Math.min(pct, 100)}%` }} /></div><div className="module-foot">{pct >= 100 ? "LIMIT REACHED" : `${Math.round(pct)}% COMMITTED`}</div></div>
+        <div className="wallet-card-wrap"><div className="wallet-card"><div className="wc-row-top"><div className="wc-chip" /><span className="card-signal">◉)))</span></div><div className="wc-number">•••• •••• •••• {(workflowId || "0000").slice(-4).padStart(4, "0")}</div><div className="wc-row-bottom"><div><div className="wc-label">AGENT</div><div className="wc-value">{liveWalletState?.agent_id || "primary_agent"}</div></div><div><div className="wc-label">LINK</div><div className={`wc-value ${connected ? "live" : "off"}`}>{connected ? "SECURE" : "OFFLINE"}</div></div></div><div className="wc-brand">RevertX / 01</div></div></div>
+      </section>
       <PolicyDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} walletState={liveWalletState} />
     </>
   );

@@ -1,0 +1,82 @@
+diff --git a/dashboard/src/App.jsx b/dashboard/src/App.jsx
+index ce717e5..dd0320d 100644
+--- a/dashboard/src/App.jsx
++++ b/dashboard/src/App.jsx
+@@ -568,7 +568,7 @@ export default function App() {
+   }
+ 
+   return (
+-    <div className="flex flex-col h-screen overflow-hidden">
++    <div className="flex flex-col h-screen overflow-hidden app-shell">
+       <TopBar
+         workflowId={workflowId}
+         budget={budget}
+@@ -577,12 +577,20 @@ export default function App() {
+         liveWalletState={liveWalletState}
+       />
+ 
+-      <div className="flex flex-1 overflow-hidden">
+-        {/* Left — Agent Terminal */}
+-        <AgentTerminal lines={terminalLines} />
++      <div className="deck-command-strip">
++        <span className="strip-title">LIVE OPERATION / SAGA CONTROL</span>
++        <span className="strip-route">PRIMARY AGENT <b>→</b> MERCHANT NETWORK <b>→</b> RECONCILIATION <b>→</b> AEGIS RECOVERY</span>
++        <span className="strip-clock">{connected ? "LINK STABLE" : "AWAITING LINK"}</span>
++      </div>
++
++      <div className="deck-body">
++        <aside className="deck-rail deck-rail-left">
++          <div className="rail-label">01 / EVENT FEED</div>
++          <AgentTerminal lines={terminalLines} />
++        </aside>
+ 
+-        {/* Center — Workflow Graph */}
+-        <div className="flex-1 flex flex-col overflow-hidden">
++        <main className="deck-stage">
++          <div className="stage-toolbar"><span><i className="stage-dot" /> WORKFLOW CANVAS</span><span className="stage-mode">LIVE GRAPH / AUTO-FIT</span></div>
+           <WorkflowGraph
+             merchants={merchants}
+             nodeStates={nodeStates}
+@@ -590,10 +598,12 @@ export default function App() {
+             paymentEvidence={paymentEvidence}
+             compensationEvidence={compensationEvidence}
+           />
+-        </div>
++        </main>
+ 
+-        {/* Right — Reasoning Stream */}
+-        <ReasoningStream llmStream={llmStream} mathLine={mathLine} />
++        <aside className="deck-rail deck-rail-right">
++          <div className="rail-label">02 / COGNITIVE TRACE</div>
++          <ReasoningStream llmStream={llmStream} mathLine={mathLine} />
++        </aside>
+       </div>
+ 
+       <MetricsBar metrics={BATCH_METRICS} />
+diff --git a/dashboard/src/index.css b/dashboard/src/index.css
+index 606ce48..e49ad76 100644
+--- a/dashboard/src/index.css
++++ b/dashboard/src/index.css
+@@ -178,3 +178,22 @@ body {
+ @keyframes deck-blink { 0%,42% { opacity:.35; } 43%,100% { opacity:1; } }
+ @media (max-width:1100px) { .command-header { grid-template-columns:1fr auto; }.header-telemetry { display:none; }.telemetry-deck { grid-template-columns:1fr 1fr 250px; }.balance-module { display:none; } }
+ @media (max-width:760px) { .command-header { grid-template-columns:1fr; gap:12px; }.command-actions { justify-content:flex-start; }.telemetry-deck { grid-template-columns:1fr 1fr; }.telemetry-deck .wallet-card-wrap { grid-column:span 2; min-height:140px; } }
++
++
++/* FULL PAGE COMMAND DECK LAYOUT */
++.app-shell { background:#070b14; }
++.deck-command-strip { display:flex; align-items:center; gap:22px; min-height:32px; padding:0 18px; border-top:1px solid rgba(87,214,255,.1); border-bottom:1px solid rgba(87,214,255,.16); background:#0b1220; color:var(--text-muted); font:9px var(--mono); letter-spacing:.1em; }
++.strip-title { color:var(--deck-cyan); font-weight:700; white-space:nowrap; }.strip-route { flex:1; text-align:center; color:#7785a5; }.strip-route b { color:var(--deck-cyan); padding:0 8px; }.strip-clock { color:var(--green); white-space:nowrap; }
++.deck-body { display:grid; grid-template-columns:280px minmax(0,1fr) 330px; flex:1; min-height:0; padding:10px; gap:10px; background:radial-gradient(circle at 50% 40%,rgba(72,76,168,.12),transparent 42%),#070b14; }
++.deck-rail { min-height:0; display:flex; flex-direction:column; position:relative; border:1px solid rgba(87,214,255,.16); background:linear-gradient(180deg,rgba(15,24,42,.98),rgba(7,12,23,.98)); box-shadow:0 12px 34px rgba(0,0,0,.3); }
++.deck-rail::before,.deck-rail::after { content:""; position:absolute; width:14px; height:14px; border-color:var(--deck-cyan); opacity:.7; pointer-events:none; }.deck-rail::before { left:-1px; top:-1px; border-left:1px solid; border-top:1px solid; }.deck-rail::after { right:-1px; bottom:-1px; border-right:1px solid; border-bottom:1px solid; }
++.rail-label { flex:0 0 30px; padding:10px 12px 8px; color:var(--deck-cyan); font:9px var(--mono); letter-spacing:.14em; border-bottom:1px solid rgba(87,214,255,.14); background:linear-gradient(90deg,rgba(87,214,255,.08),transparent); }
++.deck-rail > .command-panel { flex:1; min-height:0; width:auto; border:0; }
++.deck-stage { min-width:0; min-height:0; display:flex; flex-direction:column; border:1px solid rgba(143,134,255,.24); background:#080d18; box-shadow:0 0 0 1px rgba(87,214,255,.04),0 18px 50px rgba(0,0,0,.35); position:relative; overflow:hidden; }
++.deck-stage::before { content:""; position:absolute; inset:0; z-index:0; pointer-events:none; background-image:linear-gradient(rgba(87,214,255,.065) 1px,transparent 1px),linear-gradient(90deg,rgba(87,214,255,.065) 1px,transparent 1px); background-size:32px 32px; mask-image:linear-gradient(180deg,#000,transparent 90%); }
++.stage-toolbar { z-index:2; flex:0 0 34px; display:flex; justify-content:space-between; align-items:center; padding:0 13px; border-bottom:1px solid rgba(87,214,255,.16); background:rgba(10,17,31,.88); color:#aeb8d0; font:9px var(--mono); letter-spacing:.13em; }.stage-toolbar span { display:flex; align-items:center; gap:8px; }.stage-mode { color:var(--text-muted-2); }.stage-dot { width:6px; height:6px; border-radius:50%; background:var(--deck-purple); box-shadow:0 0 9px var(--deck-purple); animation:livepulse 1.6s infinite; }
++.deck-stage > .workflow-deck { z-index:1; flex:1; min-height:0; }.deck-stage > .workflow-deck > .panel-head { display:none; }.deck-stage .react-flow { background:transparent; }
++.deck-rail-right .reasoning-panel { border:0; }.deck-rail-right .math-box { flex:0 0 210px; }
++.telemetry-deck .wallet-card { transform-style:preserve-3d; transition:transform .55s cubic-bezier(.2,.8,.2,1),box-shadow .35s ease; cursor:pointer; }.telemetry-deck .wallet-card:hover { transform:perspective(800px) rotateX(7deg) rotateY(-10deg) translateY(-7px) scale(1.025); box-shadow:-14px 20px 30px rgba(0,0,0,.45),0 0 32px rgba(87,214,255,.24); }.telemetry-deck .wallet-card:hover::after { content:"SECURE / TAP TO INSPECT"; position:absolute; right:14px; top:14px; color:var(--deck-cyan); font:8px var(--mono); letter-spacing:.12em; animation:deck-blink 1s steps(2,end) infinite; }.telemetry-deck .wallet-card:active { transform:perspective(800px) rotateX(0) rotateY(0) scale(.99); }
++@media (max-width:1050px) { .deck-body { grid-template-columns:230px minmax(0,1fr) 280px; gap:7px; padding:7px; }.strip-route { display:none; }.strip-title { flex:1; } }
++@media (max-width:800px) { .deck-body { grid-template-columns:1fr; overflow:auto; }.deck-stage { min-height:460px; order:1; }.deck-rail-left { min-height:240px; order:2; }.deck-rail-right { min-height:360px; order:3; }.deck-command-strip { min-height:28px; }.strip-clock { font-size:8px; } }

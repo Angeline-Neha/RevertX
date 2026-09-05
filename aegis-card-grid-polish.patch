@@ -1,0 +1,23 @@
+diff --git a/tmp/polish-base/dashboard/src/index.css b/dashboard/src/index.css
+index e49ad76..fa28b1e 100644
+--- a/dashboard/src/index.css
++++ b/dashboard/src/index.css
+@@ -197,3 +197,18 @@ body {
+ .telemetry-deck .wallet-card { transform-style:preserve-3d; transition:transform .55s cubic-bezier(.2,.8,.2,1),box-shadow .35s ease; cursor:pointer; }.telemetry-deck .wallet-card:hover { transform:perspective(800px) rotateX(7deg) rotateY(-10deg) translateY(-7px) scale(1.025); box-shadow:-14px 20px 30px rgba(0,0,0,.45),0 0 32px rgba(87,214,255,.24); }.telemetry-deck .wallet-card:hover::after { content:"SECURE / TAP TO INSPECT"; position:absolute; right:14px; top:14px; color:var(--deck-cyan); font:8px var(--mono); letter-spacing:.12em; animation:deck-blink 1s steps(2,end) infinite; }.telemetry-deck .wallet-card:active { transform:perspective(800px) rotateX(0) rotateY(0) scale(.99); }
+ @media (max-width:1050px) { .deck-body { grid-template-columns:230px minmax(0,1fr) 280px; gap:7px; padding:7px; }.strip-route { display:none; }.strip-title { flex:1; } }
+ @media (max-width:800px) { .deck-body { grid-template-columns:1fr; overflow:auto; }.deck-stage { min-height:460px; order:1; }.deck-rail-left { min-height:240px; order:2; }.deck-rail-right { min-height:360px; order:3; }.deck-command-strip { min-height:28px; }.strip-clock { font-size:8px; } }
++
++
++/* FINAL POLISH — card legibility + always-visible stage grid */
++.telemetry-deck .wallet-card { position:relative; overflow:hidden; isolation:isolate; padding:18px 20px; }
++.telemetry-deck .wallet-card > * { position:relative; z-index:2; }
++.telemetry-deck .wallet-card .wc-row-top { min-height:24px; }
++.telemetry-deck .wallet-card .wc-number { margin:16px 0 18px; white-space:nowrap; letter-spacing:.08em; }
++.telemetry-deck .wallet-card .wc-row-bottom { display:flex; gap:18px; padding-right:72px; }
++.telemetry-deck .wallet-card .wc-brand { right:18px; bottom:16px; z-index:3; font-size:11px; white-space:nowrap; }
++.telemetry-deck .wallet-card:hover::after { content:"SECURE"; position:absolute; z-index:4; top:12px; right:14px; color:var(--deck-cyan); font:700 8px var(--mono); letter-spacing:.16em; opacity:.9; animation:deck-blink 1s steps(2,end) infinite; }
++.telemetry-deck .wallet-card:hover .wc-brand { opacity:.45; }
++.workflow-deck::after { content:""; position:absolute; z-index:4; inset:0; pointer-events:none; background-image:linear-gradient(rgba(87,214,255,.11) 1px,transparent 1px),linear-gradient(90deg,rgba(87,214,255,.11) 1px,transparent 1px); background-size:32px 32px; background-position:center; opacity:.72; mix-blend-mode:screen; }
++.workflow-deck .react-flow__renderer,.workflow-deck .react-flow__background,.workflow-deck .react-flow__pane { background:transparent !important; }
++.workflow-deck .react-flow__controls { z-index:6; }
++.deck-stage > .workflow-deck { background:#080d18 !important; }
