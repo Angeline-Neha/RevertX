@@ -43,7 +43,7 @@ from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
 from authorization.trace import authorize
 from authorization.wallet import get_wallet
 from authorization.policy import DEFAULT_POLICY_CONFIG
-from razorpayx.client import create_payout, poll_payout, reverse_payout, get_payout
+from razorpayx.client import create_payout, poll_payout, reverse_payout, get_payout, get_available_balance
 from mock_merchants.downstream_service import confirm_fulfillment
 
 RZP_DEMO_FUND_ACCOUNT_ID = os.getenv("RZP_DEMO_FUND_ACCOUNT_ID")
@@ -548,6 +548,26 @@ async def get_wallet_state(agent_id: str):
         "spent_today": wallet.spent_today,
         "remaining_today": wallet.remaining_today,
     }
+
+
+@app.get("/razorpay-balance")
+async def get_razorpay_balance():
+    """Phase 7 — WalletPanel's second row. Real RazorpayX available balance,
+    distinct from the Agent Wallet authority meter above: the wallet numbers
+    are our own internally-configured spending limits (Postgres), this is
+    what actually exists in the RazorpayX account right now. Same
+    get_available_balance() authorization/real_balance.py's check_real_balance
+    calls, so this can never show a number that differs from what's actually
+    enforced. No auth required (matches /wallet, /policy, /aegis_status):
+    plain fetch() from the dashboard, non-sensitive to this single-agent demo.
+    On failure (missing/bad RazorpayX creds, network issue), returns null
+    rather than raising, so a panel fetch error doesn't break the rest of
+    the dashboard — WalletPanel treats null as "hide this row."""
+    try:
+        available = await get_available_balance()
+        return {"available_balance": available}
+    except Exception as exc:
+        return {"available_balance": None, "error": str(exc)}
 
 
 @app.get("/policy")

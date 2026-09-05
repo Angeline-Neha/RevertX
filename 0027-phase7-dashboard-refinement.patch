@@ -1,0 +1,84 @@
+diff --git a/dashboard/src/components/WalletPanel.jsx b/dashboard/src/components/WalletPanel.jsx
+index 7a7cdda..eb1c914 100644
+--- a/dashboard/src/components/WalletPanel.jsx
++++ b/dashboard/src/components/WalletPanel.jsx
+@@ -8,6 +8,11 @@ import { useState, useEffect } from "react";
+ // authorization_trace handler) keeps it current without polling.
+ export default function WalletPanel({ agentId = "primary_agent", liveState }) {
+   const [wallet, setWallet] = useState(null);
++  // Phase 7 — real RazorpayX available balance, fetched once alongside the
++  // wallet's initial load. Unlike wallet state, nothing in the event stream
++  // updates this mid-run today, so a one-time fetch (matching the original
++  // wallet fetch pattern before liveState existed) is enough for now.
++  const [rzpBalance, setRzpBalance] = useState(null);
+ 
+   useEffect(() => {
+     fetch(`http://localhost:8000/wallet/${agentId}`)
+@@ -16,6 +21,13 @@ export default function WalletPanel({ agentId = "primary_agent", liveState }) {
+       .catch(() => {});
+   }, [agentId]);
+ 
++  useEffect(() => {
++    fetch("http://localhost:8000/razorpay-balance")
++      .then((r) => r.json())
++      .then((data) => setRzpBalance(data.available_balance))
++      .catch(() => {});
++  }, []);
++
+   const state = liveState || wallet;
+   if (!state) return null;
+ 
+@@ -39,6 +51,13 @@ export default function WalletPanel({ agentId = "primary_agent", liveState }) {
+           <span className="text-[var(--text-muted)] font-normal"> / ₹{state.daily_limit.toLocaleString("en-IN")}</span>
+         </span>
+       </div>
++      {/* Phase 7 — real RazorpayX balance, distinct row so judges see this
++          isn't the same number as the Agent Wallet authority above it. */}
++      {rzpBalance !== null && (
++        <div className="text-xs text-[var(--text-muted)] mt-1">
++          RazorpayX balance <span className="font-mono text-[var(--text-primary,#c9d1d9)]">₹{rzpBalance.toLocaleString("en-IN")}</span>
++        </div>
++      )}
+     </div>
+   );
+ }
+diff --git a/proxy/mcp_proxy.py b/proxy/mcp_proxy.py
+index 11292ac..1fbcf26 100644
+--- a/proxy/mcp_proxy.py
++++ b/proxy/mcp_proxy.py
+@@ -43,7 +43,7 @@ from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
+ from authorization.trace import authorize
+ from authorization.wallet import get_wallet
+ from authorization.policy import DEFAULT_POLICY_CONFIG
+-from razorpayx.client import create_payout, poll_payout, reverse_payout, get_payout
++from razorpayx.client import create_payout, poll_payout, reverse_payout, get_payout, get_available_balance
+ from mock_merchants.downstream_service import confirm_fulfillment
+ 
+ RZP_DEMO_FUND_ACCOUNT_ID = os.getenv("RZP_DEMO_FUND_ACCOUNT_ID")
+@@ -550,6 +550,26 @@ async def get_wallet_state(agent_id: str):
+     }
+ 
+ 
++@app.get("/razorpay-balance")
++async def get_razorpay_balance():
++    """Phase 7 — WalletPanel's second row. Real RazorpayX available balance,
++    distinct from the Agent Wallet authority meter above: the wallet numbers
++    are our own internally-configured spending limits (Postgres), this is
++    what actually exists in the RazorpayX account right now. Same
++    get_available_balance() authorization/real_balance.py's check_real_balance
++    calls, so this can never show a number that differs from what's actually
++    enforced. No auth required (matches /wallet, /policy, /aegis_status):
++    plain fetch() from the dashboard, non-sensitive to this single-agent demo.
++    On failure (missing/bad RazorpayX creds, network issue), returns null
++    rather than raising, so a panel fetch error doesn't break the rest of
++    the dashboard — WalletPanel treats null as "hide this row."""
++    try:
++        available = await get_available_balance()
++        return {"available_balance": available}
++    except Exception as exc:
++        return {"available_balance": None, "error": str(exc)}
++
++
+ @app.get("/policy")
+ def get_policy():
+     """Policy panel — categories/denylist/allowlist/approval threshold.
