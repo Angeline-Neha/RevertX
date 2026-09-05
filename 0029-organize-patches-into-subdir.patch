@@ -1,0 +1,128 @@
+diff --git a/0010-fix-anomaly-detector-response-schema-crash.patch b/patches/0010-fix-anomaly-detector-response-schema-crash.patch
+similarity index 100%
+rename from 0010-fix-anomaly-detector-response-schema-crash.patch
+rename to patches/0010-fix-anomaly-detector-response-schema-crash.patch
+diff --git a/0011-fix-anomaly-prompt-format-keyerror.patch b/patches/0011-fix-anomaly-prompt-format-keyerror.patch
+similarity index 100%
+rename from 0011-fix-anomaly-prompt-format-keyerror.patch
+rename to patches/0011-fix-anomaly-prompt-format-keyerror.patch
+diff --git a/0012-merchant-registry-consolidation.patch b/patches/0012-merchant-registry-consolidation.patch
+similarity index 100%
+rename from 0012-merchant-registry-consolidation.patch
+rename to patches/0012-merchant-registry-consolidation.patch
+diff --git a/0013-dashboard-workflow-agnostic.patch b/patches/0013-dashboard-workflow-agnostic.patch
+similarity index 100%
+rename from 0013-dashboard-workflow-agnostic.patch
+rename to patches/0013-dashboard-workflow-agnostic.patch
+diff --git a/0014-phase6-merchant-registry-expansion.patch b/patches/0014-phase6-merchant-registry-expansion.patch
+similarity index 100%
+rename from 0014-phase6-merchant-registry-expansion.patch
+rename to patches/0014-phase6-merchant-registry-expansion.patch
+diff --git a/0015-phase7-planning-agent.patch b/patches/0015-phase7-planning-agent.patch
+similarity index 100%
+rename from 0015-phase7-planning-agent.patch
+rename to patches/0015-phase7-planning-agent.patch
+diff --git a/0016-phase8-scenario-trigger-ui.patch b/patches/0016-phase8-scenario-trigger-ui.patch
+similarity index 100%
+rename from 0016-phase8-scenario-trigger-ui.patch
+rename to patches/0016-phase8-scenario-trigger-ui.patch
+diff --git a/0017-policy-input-sanitization.patch b/patches/0017-policy-input-sanitization.patch
+similarity index 100%
+rename from 0017-policy-input-sanitization.patch
+rename to patches/0017-policy-input-sanitization.patch
+diff --git a/0018-authorization-block-visible-state.patch b/patches/0018-authorization-block-visible-state.patch
+similarity index 100%
+rename from 0018-authorization-block-visible-state.patch
+rename to patches/0018-authorization-block-visible-state.patch
+diff --git a/0019-merchant-rzp-real-payout.patch b/patches/0019-merchant-rzp-real-payout.patch
+similarity index 100%
+rename from 0019-merchant-rzp-real-payout.patch
+rename to patches/0019-merchant-rzp-real-payout.patch
+diff --git a/0020-fix-reference-id-collision.patch b/patches/0020-fix-reference-id-collision.patch
+similarity index 100%
+rename from 0020-fix-reference-id-collision.patch
+rename to patches/0020-fix-reference-id-collision.patch
+diff --git a/0021-add-merchant-rzp-to-catalog.patch b/patches/0021-add-merchant-rzp-to-catalog.patch
+similarity index 100%
+rename from 0021-add-merchant-rzp-to-catalog.patch
+rename to patches/0021-add-merchant-rzp-to-catalog.patch
+diff --git a/0022-wallet-policy-panels.patch b/patches/0022-wallet-policy-panels.patch
+similarity index 100%
+rename from 0022-wallet-policy-panels.patch
+rename to patches/0022-wallet-policy-panels.patch
+diff --git a/0023-real-balance-check.patch b/patches/0023-real-balance-check.patch
+similarity index 100%
+rename from 0023-real-balance-check.patch
+rename to patches/0023-real-balance-check.patch
+diff --git a/0024-payout-poll-classification.patch b/patches/0024-payout-poll-classification.patch
+similarity index 100%
+rename from 0024-payout-poll-classification.patch
+rename to patches/0024-payout-poll-classification.patch
+diff --git a/0025-fix-workflow-complete-reconciliation-check.patch b/patches/0025-fix-workflow-complete-reconciliation-check.patch
+similarity index 100%
+rename from 0025-fix-workflow-complete-reconciliation-check.patch
+rename to patches/0025-fix-workflow-complete-reconciliation-check.patch
+diff --git a/0026-flagship-downstream-failure-reversal.patch b/patches/0026-flagship-downstream-failure-reversal.patch
+similarity index 100%
+rename from 0026-flagship-downstream-failure-reversal.patch
+rename to patches/0026-flagship-downstream-failure-reversal.patch
+diff --git a/0027-phase5-pending-payout-resolution.patch b/patches/0027-phase5-pending-payout-resolution.patch
+similarity index 100%
+rename from 0027-phase5-pending-payout-resolution.patch
+rename to patches/0027-phase5-pending-payout-resolution.patch
+diff --git a/0028-phase6-preset2-reconciliation-demo.patch b/patches/0028-phase6-preset2-reconciliation-demo.patch
+similarity index 100%
+rename from 0028-phase6-preset2-reconciliation-demo.patch
+rename to patches/0028-phase6-preset2-reconciliation-demo.patch
+diff --git a/patches/README.md b/patches/README.md
+new file mode 100644
+index 0000000..4988dd3
+--- /dev/null
++++ b/patches/README.md
+@@ -0,0 +1,34 @@
++# Patches
++
++Applied in order, oldest first. Filenames follow the repo's `NNNN-description.patch` convention;
++apply with `git apply patches/<name>.patch` from the repo root.
++
++## Numbered series
++
++- `0010-fix-anomaly-detector-response-schema-crash.patch` — fix anomaly detector response schema crash
++- `0011-fix-anomaly-prompt-format-keyerror.patch` — fix anomaly prompt format keyerror
++- `0012-merchant-registry-consolidation.patch` — merchant registry consolidation
++- `0013-dashboard-workflow-agnostic.patch` — dashboard workflow agnostic
++- `0014-phase6-merchant-registry-expansion.patch` — phase6 merchant registry expansion
++- `0015-phase7-planning-agent.patch` — phase7 planning agent
++- `0016-phase8-scenario-trigger-ui.patch` — phase8 scenario trigger ui
++- `0017-policy-input-sanitization.patch` — policy input sanitization
++- `0018-authorization-block-visible-state.patch` — authorization block visible state
++- `0019-merchant-rzp-real-payout.patch` — merchant rzp real payout
++- `0020-fix-reference-id-collision.patch` — fix reference id collision
++- `0021-add-merchant-rzp-to-catalog.patch` — add merchant rzp to catalog
++- `0022-wallet-policy-panels.patch` — wallet policy panels
++- `0023-real-balance-check.patch` — real balance check
++- `0024-payout-poll-classification.patch` — payout poll classification
++- `0025-fix-workflow-complete-reconciliation-check.patch` — fix workflow complete reconciliation check
++- `0026-flagship-downstream-failure-reversal.patch` — flagship downstream failure reversal
++- `0027-phase5-pending-payout-resolution.patch` — phase5 pending payout resolution
++- `0028-phase6-preset2-reconciliation-demo.patch` — phase6 preset2 reconciliation demo
++
++## Pre-numbering ad-hoc fixes
++
++Applied before the numbered convention started; kept for history, no fixed order guaranteed.
++
++- `anomaly-timeout-fix.patch` — anomaly timeout fix
++- `fetch-policy-and-docstring-fix.patch` — fetch policy and docstring fix
++- `gemini-model-switch.patch` — gemini model switch
+diff --git a/anomaly-timeout-fix.patch b/patches/anomaly-timeout-fix.patch
+similarity index 100%
+rename from anomaly-timeout-fix.patch
+rename to patches/anomaly-timeout-fix.patch
+diff --git a/fetch-policy-and-docstring-fix.patch b/patches/fetch-policy-and-docstring-fix.patch
+similarity index 100%
+rename from fetch-policy-and-docstring-fix.patch
+rename to patches/fetch-policy-and-docstring-fix.patch
+diff --git a/gemini-model-switch.patch b/patches/gemini-model-switch.patch
+similarity index 100%
+rename from gemini-model-switch.patch
+rename to patches/gemini-model-switch.patch
