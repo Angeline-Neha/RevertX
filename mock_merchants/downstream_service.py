@@ -21,23 +21,29 @@ from __future__ import annotations
 
 import os
 
-# When true (the default), every merchant_rzp fulfillment check fails —
-# this is the intended demo behavior for Preset 3. Set to "false" in .env
-# to rehearse Preset 1 (clean happy path) through the exact same
-# merchant_rzp payout path without triggering the downstream failure.
+# When true (the default), the Downstream Failure demo preset's fulfillment
+# check always fails — this is the intended demo behavior for that preset.
+# Scoped to FORCE_FAIL_MERCHANT_ID only (previously applied to every
+# merchant_rzp payout, which meant a true Happy Path — real payout AND
+# downstream success — didn't exist without flipping this off globally and
+# breaking the failure demo in the same breath). Set to "false" to rehearse
+# that preset's exact payout path without triggering the failure.
 DOWNSTREAM_FORCE_FAIL = os.getenv("DOWNSTREAM_FORCE_FAIL", "true").lower() == "true"
+FORCE_FAIL_MERCHANT_ID = "merchant_rzp_downstream_fail"
 
 
 async def confirm_fulfillment(merchant_id: str, settlement_ref: str, amount: float) -> dict:
     """Returns {"confirmed": bool, "reason": str}.
 
     A real integration would call the merchant's own booking/fulfillment
-    API here. merchant_rzp has none — "RazorpayX Live Payout" isn't a
-    bookable merchant, it's a stand-in for "a real payout went out for
-    some real-world thing" — so this is a local, deterministic stand-in
-    for that missing confirmation call.
+    API here. The real-payout merchants have none — these aren't bookable
+    merchants, they're a stand-in for "a real payout went out for some
+    real-world thing" — so this is a local, deterministic stand-in for that
+    missing confirmation call. Only FORCE_FAIL_MERCHANT_ID ever fails here;
+    every other merchant_id (e.g. the Happy Path's merchant_rzp) always
+    confirms, since there is no real downstream to actually check.
     """
-    if DOWNSTREAM_FORCE_FAIL:
+    if merchant_id == FORCE_FAIL_MERCHANT_ID and DOWNSTREAM_FORCE_FAIL:
         return {
             "confirmed": False,
             "reason": (

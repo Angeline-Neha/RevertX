@@ -177,6 +177,13 @@ export default function App() {
         if (data.match) {
           setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "success" }));
           log(`✓ ${data.merchant_id} reconciled — ₹${data.amount.toLocaleString("en-IN")} settled`);
+        } else if (data.mismatch_type === "pending_unconfirmed") {
+          // Held, not dead — same distinction the payout_unconfirmed /
+          // human_escalation_required banner already makes. Was previously
+          // falling into the "failed" bucket below, making every reconciliation
+          // test / genuinely-uncertain payout look like a hard crash.
+          setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "held" }));
+          log(`⏳ ${data.merchant_id} unconfirmed — holding, not a failure`);
         } else {
           setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "failed" }));
           log(`✗ ${data.merchant_id} mismatch: ${data.mismatch_type}`);

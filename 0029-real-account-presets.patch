@@ -1,0 +1,283 @@
+diff --git a/.env.example b/.env.example
+index 676bfaa..e1f8c84 100644
+--- a/.env.example
++++ b/.env.example
+@@ -51,12 +51,22 @@ RZP_POLL_MAX_ATTEMPTS=3
+ # RazorpayX account as RZP_DEMO_FUND_ACCOUNT_ID, distinct fund account.
+ # Provision with: python -m razorpayx.provision --self
+ RZP_SELF_FUND_ACCOUNT_ID=
+-# Read in: mock_merchants/downstream_service.py. When true (default),
+-# merchant_rzp's downstream fulfillment check always fails — this is the
+-# intended demo behavior for Preset 3. Set to false to rehearse Preset 1
+-# (clean happy path) on the exact same merchant_rzp payout path.
++# Read in: mock_merchants/downstream_service.py. When true (default), the
++# Downstream Failure demo preset's fulfillment check always fails — scoped
++# to merchant_rzp_downstream_fail only (Happy Path's merchant_rzp always
++# succeeds regardless of this flag). Set to false to rehearse that preset's
++# exact payout path without triggering the failure.
+ DOWNSTREAM_FORCE_FAIL=true
+ 
++# --- RazorpayX deterministic insufficient-funds block (Insufficient Funds
++#     demo preset) ------------------------------------------------------
++# Read in: authorization/real_balance.py. When true (default),
++# merchant_rzp_insufficient's real-balance check always blocks, regardless
++# of the account's actual balance — reliable for a live demo instead of
++# depending on the account happening to be low on funds. Set to false to
++# let it check against the real balance like merchant_rzp does.
++REAL_BALANCE_DEMO_FORCE_INSUFFICIENT=true
++
+ # --- RazorpayX deterministic pending payout (Phase 6 — Preset 2) -------
+ # Read in: proxy/mcp_proxy.py. When true (default), merchant_rzp_pending
+ # (catalog.py) skips the real poll loop and is forced to stay "pending" —
+diff --git a/authorization/real_balance.py b/authorization/real_balance.py
+index afc86ed..74c3178 100644
+--- a/authorization/real_balance.py
++++ b/authorization/real_balance.py
+@@ -8,17 +8,30 @@ account right now? Wallet and Policy can both pass while this still blocks
+ — e.g. an agent well within its ₹25,000/txn authority can still exceed
+ what's genuinely sitting in the account.
+ 
+-Only meaningful for merchant_id == "merchant_rzp": mock merchants never
+-touch RazorpayX, so checking a real balance against a mock charge would be
+-a category error, not a safety check. Callers should skip this entirely
+-for any other merchant_id.
++Only meaningful for the real-payout merchant ids (authorization/trace.py's
++REAL_PAYOUT_MERCHANT_IDS): mock merchants never touch RazorpayX, so
++checking a real balance against a mock charge would be a category error,
++not a safety check. Callers should skip this entirely for any other
++merchant_id.
+ """
+ from __future__ import annotations
+ 
++import os
+ from dataclasses import dataclass
+ 
+ from razorpayx.client import get_available_balance
+ 
++# Insufficient Funds demo preset — merchant_rzp_insufficient always blocks
++# here regardless of the account's actual balance, same reproducibility
++# reasoning as DOWNSTREAM_FORCE_FAIL (mock_merchants/downstream_service.py)
++# and RZP_PENDING_DEMO_FORCE. Still fetches the real balance for an honest
++# event payload (available_balance shown to the dashboard is real), just
++# doesn't classify off it for this one merchant_id.
++REAL_BALANCE_DEMO_FORCE_INSUFFICIENT = os.getenv(
++    "REAL_BALANCE_DEMO_FORCE_INSUFFICIENT", "true"
++).lower() == "true"
++FORCE_INSUFFICIENT_MERCHANT_ID = "merchant_rzp_insufficient"
++
+ 
+ @dataclass
+ class RealBalanceCheckResult:
+@@ -27,13 +40,20 @@ class RealBalanceCheckResult:
+     detail: str
+ 
+ 
+-async def check_real_balance(amount: float) -> RealBalanceCheckResult:
++async def check_real_balance(amount: float, merchant_id: str | None = None) -> RealBalanceCheckResult:
+     available = await get_available_balance()
+-    if amount > available:
+-        return RealBalanceCheckResult(
+-            ok=False, available=available,
+-            detail=f"amount ₹{amount:,.2f} exceeds real RazorpayX available balance ₹{available:,.2f}",
++    forced = (
++        merchant_id == FORCE_INSUFFICIENT_MERCHANT_ID
++        and REAL_BALANCE_DEMO_FORCE_INSUFFICIENT
++    )
++    if forced or amount > available:
++        detail = (
++            f"amount ₹{amount:,.2f} exceeds real RazorpayX available balance ₹{available:,.2f}"
++            if not forced else
++            f"amount ₹{amount:,.2f} treated as exceeding real RazorpayX available balance "
++            f"₹{available:,.2f} (demo-forced for {merchant_id})"
+         )
++        return RealBalanceCheckResult(ok=False, available=available, detail=detail)
+     return RealBalanceCheckResult(
+         ok=True, available=available,
+         detail=f"within real available balance ₹{available:,.2f}",
+diff --git a/authorization/trace.py b/authorization/trace.py
+index 6397048..74cad10 100644
+--- a/authorization/trace.py
++++ b/authorization/trace.py
+@@ -19,10 +19,16 @@ from authorization.real_balance import check_real_balance
+ from state_log.redis_client import publish_event
+ 
+ 
+-# Only merchant_id that ever triggers a real RazorpayX payout — see
++# Merchant ids that ever trigger a real RazorpayX payout — see
+ # authorization/real_balance.py's module docstring for why the real-balance
+-# check is skipped entirely for every other merchant_id.
+-REAL_PAYOUT_MERCHANT_ID = "merchant_rzp"
++# check is skipped entirely for every other merchant_id. Was a single id
++# (REAL_PAYOUT_MERCHANT_ID = "merchant_rzp") before the Insufficient Funds /
++# Downstream Failure demo presets added their own dedicated merchant_ids on
++# the same real-payout path.
++REAL_PAYOUT_MERCHANT_IDS = {
++    "merchant_rzp", "merchant_rzp_pending",
++    "merchant_rzp_insufficient", "merchant_rzp_downstream_fail",
++}
+ 
+ 
+ async def authorize(
+@@ -87,11 +93,11 @@ async def authorize(
+     # Third, distinct gate — separate from Wallet (agent's own configured
+     # authority) and Policy (rule compliance) above: does the money
+     # actually exist in the real RazorpayX account right now? Skipped for
+-    # every merchant except merchant_rzp — mock merchants never touch
+-    # RazorpayX, so checking a real balance against a mock charge would be
+-    # a category error, not a safety check.
+-    if merchant_id == REAL_PAYOUT_MERCHANT_ID:
+-        balance_result = await check_real_balance(amount)
++    # every merchant not in REAL_PAYOUT_MERCHANT_IDS — mock merchants never
++    # touch RazorpayX, so checking a real balance against a mock charge
++    # would be a category error, not a safety check.
++    if merchant_id in REAL_PAYOUT_MERCHANT_IDS:
++        balance_result = await check_real_balance(amount, merchant_id=merchant_id)
+         emit(
+             "check_real_balance", "pass" if balance_result.ok else "fail",
+             balance_result.detail, {"available_balance": balance_result.available},
+diff --git a/dashboard/src/components/TriggerPanel.jsx b/dashboard/src/components/TriggerPanel.jsx
+index 4327d36..2dd8c5c 100644
+--- a/dashboard/src/components/TriggerPanel.jsx
++++ b/dashboard/src/components/TriggerPanel.jsx
+@@ -1,31 +1,16 @@
+ import { useState } from "react";
+ 
+ const PRESETS = [
+-  // True happy path — budget comfortably covers both items (₹30k) so nothing
+-  // fails. Useful as the clean "before" baseline to contrast against the
+-  // failure-driven presets below.
+-  { label: "Happy path", goal: "Book a CRM license and hotel for our offsite", budget: 32000 },
+-  // Flexible hotel (₹20k) + catering (₹15k) = ₹35k vs ₹22k budget: hotel
+-  // succeeds, catering is rejected, compensation refunds the flexible hotel
+-  // under merchant_d's date-threshold policy — a partial/conditional refund
+-  // case, distinct from B's hard non-refundable and F's always-non-refundable.
+-  { label: "Flexible hotel", goal: "Book a flexible-cancellation hotel and catering for a conference", budget: 22000 },
+-  // Domain (₹12k, 10% cancellation penalty) + CRM (₹10k) = ₹22k vs ₹15k
+-  // budget: domain succeeds first, CRM is rejected, compensation refunds the
+-  // domain registration and must apply the exact 10% penalty math.
+-  { label: "Partial penalty", goal: "Register a domain with hosting, then get a CRM license for the team", budget: 15000 },
+-  { label: "Event launch", goal: "Book venue and catering for a product launch event", budget: 30000 },
+-  // Signage (₹8k) + domain hosting (₹12k) = ₹20k vs ₹12k budget: signage
+-  // succeeds first, domain is rejected, compensation must fetch_policy on
+-  // the flaky print vendor — the one preset that actually exercises the
+-  // intermittent /policy failure it's named for.
+-  { label: "Flaky vendor", goal: "Book signage printing for our product launch banner, then register the event's domain and hosting", budget: 12000 },
+-  // Phase 6 (Preset 2) — routes to merchant_rzp_pending (catalog.py), a
+-  // real RazorpayX payout deterministically forced to stay pending
+-  // (RZP_PENDING_DEMO_FORCE) so the payout_unconfirmed/human_escalation_
+-  // required/pending_payout_worker.py path (Phase 5) has a one-click,
+-  // reliably reproducible trigger instead of hand-typed goal text.
+-  { label: "Reconciliation (pending)", goal: "Make a reconciliation test payout that should stay pending, not a normal vendor payment", budget: 15000 },
++  // All four presets now hit the real RazorpayX account via merchant_rzp's
++  // family of catalog entries (primary_agent/catalog.py) — the old
++  // mock-merchant presets (Happy path/Flexible hotel/Partial penalty/Event
++  // launch/Flaky vendor) are removed from this panel. Their backend code
++  // (mock_merchants/, compensating_agent/graph.py's policy-fetch saga)
++  // is untouched and still exists — only these dashboard shortcuts changed.
++  { label: "🟢 Happy Path", goal: "Pay for conference registration as a real payout", budget: 15000 },
++  { label: "🔴 Insufficient Funds", goal: "Make an insufficient-funds test payout that should be blocked by the real balance check", budget: 15000 },
++  { label: "🟠 Stuck / Unconfirmed", goal: "Make a reconciliation test payout that should stay pending, not a normal vendor payment", budget: 15000 },
++  { label: "🔥 Downstream Failure", goal: "Make a downstream-failure test payout to demonstrate saga recovery and a real reversal", budget: 15000 },
+ ];
+ 
+ // Fuzzy risk gauge (Feature A) — deliberately qualitative, never the exact
+diff --git a/mock_merchants/downstream_service.py b/mock_merchants/downstream_service.py
+index 6a730b0..b9c75af 100644
+--- a/mock_merchants/downstream_service.py
++++ b/mock_merchants/downstream_service.py
+@@ -21,23 +21,29 @@ from __future__ import annotations
+ 
+ import os
+ 
+-# When true (the default), every merchant_rzp fulfillment check fails —
+-# this is the intended demo behavior for Preset 3. Set to "false" in .env
+-# to rehearse Preset 1 (clean happy path) through the exact same
+-# merchant_rzp payout path without triggering the downstream failure.
++# When true (the default), the Downstream Failure demo preset's fulfillment
++# check always fails — this is the intended demo behavior for that preset.
++# Scoped to FORCE_FAIL_MERCHANT_ID only (previously applied to every
++# merchant_rzp payout, which meant a true Happy Path — real payout AND
++# downstream success — didn't exist without flipping this off globally and
++# breaking the failure demo in the same breath). Set to "false" to rehearse
++# that preset's exact payout path without triggering the failure.
+ DOWNSTREAM_FORCE_FAIL = os.getenv("DOWNSTREAM_FORCE_FAIL", "true").lower() == "true"
++FORCE_FAIL_MERCHANT_ID = "merchant_rzp_downstream_fail"
+ 
+ 
+ async def confirm_fulfillment(merchant_id: str, settlement_ref: str, amount: float) -> dict:
+     """Returns {"confirmed": bool, "reason": str}.
+ 
+     A real integration would call the merchant's own booking/fulfillment
+-    API here. merchant_rzp has none — "RazorpayX Live Payout" isn't a
+-    bookable merchant, it's a stand-in for "a real payout went out for
+-    some real-world thing" — so this is a local, deterministic stand-in
+-    for that missing confirmation call.
++    API here. The real-payout merchants have none — these aren't bookable
++    merchants, they're a stand-in for "a real payout went out for some
++    real-world thing" — so this is a local, deterministic stand-in for that
++    missing confirmation call. Only FORCE_FAIL_MERCHANT_ID ever fails here;
++    every other merchant_id (e.g. the Happy Path's merchant_rzp) always
++    confirms, since there is no real downstream to actually check.
+     """
+-    if DOWNSTREAM_FORCE_FAIL:
++    if merchant_id == FORCE_FAIL_MERCHANT_ID and DOWNSTREAM_FORCE_FAIL:
+         return {
+             "confirmed": False,
+             "reason": (
+diff --git a/primary_agent/catalog.py b/primary_agent/catalog.py
+index b371e3e..7722f01 100644
+--- a/primary_agent/catalog.py
++++ b/primary_agent/catalog.py
+@@ -64,6 +64,36 @@ MERCHANT_CATALOG: list[CatalogEntry] = [
+         "NOT a normal conference registration or vendor payment",
+         15000.0, "reconciliation test payout (intentionally pending)",
+     ),
++    # Insufficient Funds preset — same real RazorpayX payout path as
++    # merchant_rzp, but authorization/real_balance.py deterministically
++    # forces check_real_balance to fail for this one (via
++    # REAL_BALANCE_DEMO_FORCE_INSUFFICIENT), instead of depending on the
++    # account's actual balance happening to be low enough on demo day —
++    # same reproducibility reasoning as DOWNSTREAM_FORCE_FAIL and
++    # RZP_PENDING_DEMO_FORCE. Never reaches create_payout() at all: the
++    # block happens in authorize(), before any money moves.
++    CatalogEntry(
++        "merchant_rzp_insufficient", "RazorpayX Live Payout (Insufficient Funds Test)",
++        "a real RazorpayX payout deliberately used to demonstrate the real-balance block — "
++        "requested amount treated as exceeding the account's actual available balance — "
++        "NOT a normal conference registration or vendor payment",
++        15000.0, "insufficient-funds test payout (intentionally blocked)",
++    ),
++    # Downstream Failure preset (the flagship saga-recovery demo) — same
++    # real payout + poll-to-processed path as merchant_rzp, but
++    # mock_merchants/downstream_service.py deterministically forces ONLY
++    # this merchant_id's fulfillment check to fail (via
++    # DOWNSTREAM_FORCE_FAIL, now scoped by merchant_id instead of applying
++    # to every merchant_rzp payout) — so Happy Path (merchant_rzp) can
++    # always succeed end-to-end while this one always demonstrates the
++    # real reversal.
++    CatalogEntry(
++        "merchant_rzp_downstream_fail", "RazorpayX Live Payout (Downstream Failure Test)",
++        "a real RazorpayX payout deliberately used to demonstrate saga recovery — payout "
++        "processed successfully but the downstream fulfillment/booking confirmation fails, "
++        "triggering a real reversal payout — NOT a normal conference registration or vendor payment",
++        15000.0, "downstream-failure test payout (triggers reversal)",
++    ),
+ ]
+ 
+ # Fast lookup by id — planner.py validates every LLM-chosen merchant_id
+diff --git a/proxy/mcp_proxy.py b/proxy/mcp_proxy.py
+index 1fbcf26..bbb3c67 100644
+--- a/proxy/mcp_proxy.py
++++ b/proxy/mcp_proxy.py
+@@ -246,7 +246,10 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
+     # merchant_rzp payout polls to non_terminal; used after the transaction
+     # step is written to backfill its step_id for traceability.
+ 
+-    if merchant_id in ("merchant_rzp", "merchant_rzp_pending"):
++    if merchant_id in (
++        "merchant_rzp", "merchant_rzp_pending",
++        "merchant_rzp_insufficient", "merchant_rzp_downstream_fail",
++    ):
+         # Real RazorpayX Test Mode payout — same response shape (status/
+         # amount/payee/settlement_ref) as a mock merchant's /charge, so
+         # every downstream step (budget commit, reconciliation, dashboard

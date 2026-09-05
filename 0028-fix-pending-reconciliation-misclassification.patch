@@ -1,0 +1,71 @@
+diff --git a/dashboard/src/App.jsx b/dashboard/src/App.jsx
+index 1545d04..6cc0505 100644
+--- a/dashboard/src/App.jsx
++++ b/dashboard/src/App.jsx
+@@ -177,6 +177,13 @@ export default function App() {
+         if (data.match) {
+           setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "success" }));
+           log(`✓ ${data.merchant_id} reconciled — ₹${data.amount.toLocaleString("en-IN")} settled`);
++        } else if (data.mismatch_type === "pending_unconfirmed") {
++          // Held, not dead — same distinction the payout_unconfirmed /
++          // human_escalation_required banner already makes. Was previously
++          // falling into the "failed" bucket below, making every reconciliation
++          // test / genuinely-uncertain payout look like a hard crash.
++          setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "held" }));
++          log(`⏳ ${data.merchant_id} unconfirmed — holding, not a failure`);
+         } else {
+           setNodeStates((prev) => ({ ...prev, [data.merchant_id]: "failed" }));
+           log(`✗ ${data.merchant_id} mismatch: ${data.mismatch_type}`);
+diff --git a/dashboard/src/components/WorkflowGraph.jsx b/dashboard/src/components/WorkflowGraph.jsx
+index 3602af1..9c77a39 100644
+--- a/dashboard/src/components/WorkflowGraph.jsx
++++ b/dashboard/src/components/WorkflowGraph.jsx
+@@ -16,6 +16,11 @@ const STATUS_STYLES = {
+   success:     { bg: "#1a3320", border: "#3fb950", text: "#3fb950", icon: "✓" },
+   failed:      { bg: "#2d1a1a", border: "#f85149", text: "#f85149", icon: "✗" },
+   skipped:     { bg: "#2a2a2a", border: "#484f58", text: "#8b949e", icon: "—" },
++  // Phase 2/5/6 — a payout held at "pending" (non_terminal poll result, or
++  // Preset 2's forced demo hold) is genuinely unconfirmed, not a failure —
++  // same ⏳ language as the human_escalation_required banner. Distinct from
++  // both `pending` above (hasn't run yet) and `failed` (confirmed dead).
++  held:        { bg: "#332a14", border: "#d29922", text: "#d29922", icon: "⏳" },
+ };
+ 
+ // Feature D — confidence/"evaluating" flicker. While a node is in_progress
+diff --git a/engine/reconciliation.py b/engine/reconciliation.py
+index 3e5d6f3..eec203a 100644
+--- a/engine/reconciliation.py
++++ b/engine/reconciliation.py
+@@ -51,6 +51,19 @@ def reconcile(
+         )
+ 
+     # ---- 4. Status must be "settled" ----
++    # "pending" (Phase 2/5/6's non_terminal classification — a payout still
++    # queued/processing after the poll window, or Preset 2's deliberately
++    # forced hold) is a genuinely open question, not a failure — that's the
++    # entire premise of payout_unconfirmed / human_escalation_required /
++    # pending_payout_worker.py. Collapsing it into "hard_error" (originally
++    # meant for gateway 4xx/5xx/timeouts, check #1 above) made every
++    # intentional Phase 5/6 hold render identically to an actual crash on
++    # this panel and in the graph node. Keep it a distinct mismatch_type so
++    # only a real terminal failure ("failed") still reads as hard_error.
++    if entry.actual.status == "pending":
++        return ReconciliationResult(
++            step_id=entry.step_id, match=False, mismatch_type="pending_unconfirmed"
++        )
+     status_ok: bool = entry.actual.status == "settled"
+     if not status_ok:
+         return ReconciliationResult(
+diff --git a/proxy/schemas.py b/proxy/schemas.py
+index 5f4b0c7..792fc75 100644
+--- a/proxy/schemas.py
++++ b/proxy/schemas.py
+@@ -55,6 +55,8 @@ class ReconciliationResult(BaseModel):
+     mismatch_type: Optional[str] = None
+     # mismatch_type is one of:
+     #   "amount_mismatch" | "payee_mismatch" | "duplicate_settlement" | "hard_error"
++    #   | "pending_unconfirmed" (status="pending" — held/uncertain, not a
++    #     failure; see engine/reconciliation.py check #4)
+ 
+ 
+ # ---------------------------------------------------------------------------

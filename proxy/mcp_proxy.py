@@ -246,7 +246,10 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
     # merchant_rzp payout polls to non_terminal; used after the transaction
     # step is written to backfill its step_id for traceability.
 
-    if merchant_id in ("merchant_rzp", "merchant_rzp_pending"):
+    if merchant_id in (
+        "merchant_rzp", "merchant_rzp_pending",
+        "merchant_rzp_insufficient", "merchant_rzp_downstream_fail",
+    ):
         # Real RazorpayX Test Mode payout — same response shape (status/
         # amount/payee/settlement_ref) as a mock merchant's /charge, so
         # every downstream step (budget commit, reconciliation, dashboard

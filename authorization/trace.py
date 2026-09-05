@@ -19,10 +19,16 @@ from authorization.real_balance import check_real_balance
 from state_log.redis_client import publish_event
 
 
-# Only merchant_id that ever triggers a real RazorpayX payout — see
+# Merchant ids that ever trigger a real RazorpayX payout — see
 # authorization/real_balance.py's module docstring for why the real-balance
-# check is skipped entirely for every other merchant_id.
-REAL_PAYOUT_MERCHANT_ID = "merchant_rzp"
+# check is skipped entirely for every other merchant_id. Was a single id
+# (REAL_PAYOUT_MERCHANT_ID = "merchant_rzp") before the Insufficient Funds /
+# Downstream Failure demo presets added their own dedicated merchant_ids on
+# the same real-payout path.
+REAL_PAYOUT_MERCHANT_IDS = {
+    "merchant_rzp", "merchant_rzp_pending",
+    "merchant_rzp_insufficient", "merchant_rzp_downstream_fail",
+}
 
 
 async def authorize(
@@ -87,11 +93,11 @@ async def authorize(
     # Third, distinct gate — separate from Wallet (agent's own configured
     # authority) and Policy (rule compliance) above: does the money
     # actually exist in the real RazorpayX account right now? Skipped for
-    # every merchant except merchant_rzp — mock merchants never touch
-    # RazorpayX, so checking a real balance against a mock charge would be
-    # a category error, not a safety check.
-    if merchant_id == REAL_PAYOUT_MERCHANT_ID:
-        balance_result = await check_real_balance(amount)
+    # every merchant not in REAL_PAYOUT_MERCHANT_IDS — mock merchants never
+    # touch RazorpayX, so checking a real balance against a mock charge
+    # would be a category error, not a safety check.
+    if merchant_id in REAL_PAYOUT_MERCHANT_IDS:
+        balance_result = await check_real_balance(amount, merchant_id=merchant_id)
         emit(
             "check_real_balance", "pass" if balance_result.ok else "fail",
             balance_result.detail, {"available_balance": balance_result.available},

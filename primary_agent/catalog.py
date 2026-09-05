@@ -64,6 +64,36 @@ MERCHANT_CATALOG: list[CatalogEntry] = [
         "NOT a normal conference registration or vendor payment",
         15000.0, "reconciliation test payout (intentionally pending)",
     ),
+    # Insufficient Funds preset — same real RazorpayX payout path as
+    # merchant_rzp, but authorization/real_balance.py deterministically
+    # forces check_real_balance to fail for this one (via
+    # REAL_BALANCE_DEMO_FORCE_INSUFFICIENT), instead of depending on the
+    # account's actual balance happening to be low enough on demo day —
+    # same reproducibility reasoning as DOWNSTREAM_FORCE_FAIL and
+    # RZP_PENDING_DEMO_FORCE. Never reaches create_payout() at all: the
+    # block happens in authorize(), before any money moves.
+    CatalogEntry(
+        "merchant_rzp_insufficient", "RazorpayX Live Payout (Insufficient Funds Test)",
+        "a real RazorpayX payout deliberately used to demonstrate the real-balance block — "
+        "requested amount treated as exceeding the account's actual available balance — "
+        "NOT a normal conference registration or vendor payment",
+        15000.0, "insufficient-funds test payout (intentionally blocked)",
+    ),
+    # Downstream Failure preset (the flagship saga-recovery demo) — same
+    # real payout + poll-to-processed path as merchant_rzp, but
+    # mock_merchants/downstream_service.py deterministically forces ONLY
+    # this merchant_id's fulfillment check to fail (via
+    # DOWNSTREAM_FORCE_FAIL, now scoped by merchant_id instead of applying
+    # to every merchant_rzp payout) — so Happy Path (merchant_rzp) can
+    # always succeed end-to-end while this one always demonstrates the
+    # real reversal.
+    CatalogEntry(
+        "merchant_rzp_downstream_fail", "RazorpayX Live Payout (Downstream Failure Test)",
+        "a real RazorpayX payout deliberately used to demonstrate saga recovery — payout "
+        "processed successfully but the downstream fulfillment/booking confirmation fails, "
+        "triggering a real reversal payout — NOT a normal conference registration or vendor payment",
+        15000.0, "downstream-failure test payout (triggers reversal)",
+    ),
 ]
 
 # Fast lookup by id — planner.py validates every LLM-chosen merchant_id

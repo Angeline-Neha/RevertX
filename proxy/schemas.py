@@ -55,6 +55,8 @@ class ReconciliationResult(BaseModel):
     mismatch_type: Optional[str] = None
     # mismatch_type is one of:
     #   "amount_mismatch" | "payee_mismatch" | "duplicate_settlement" | "hard_error"
+    #   | "pending_unconfirmed" (status="pending" — held/uncertain, not a
+    #     failure; see engine/reconciliation.py check #4)
 
 
 # ---------------------------------------------------------------------------

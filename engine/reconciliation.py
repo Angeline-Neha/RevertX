@@ -51,6 +51,19 @@ def reconcile(
         )
 
     # ---- 4. Status must be "settled" ----
+    # "pending" (Phase 2/5/6's non_terminal classification — a payout still
+    # queued/processing after the poll window, or Preset 2's deliberately
+    # forced hold) is a genuinely open question, not a failure — that's the
+    # entire premise of payout_unconfirmed / human_escalation_required /
+    # pending_payout_worker.py. Collapsing it into "hard_error" (originally
+    # meant for gateway 4xx/5xx/timeouts, check #1 above) made every
+    # intentional Phase 5/6 hold render identically to an actual crash on
+    # this panel and in the graph node. Keep it a distinct mismatch_type so
+    # only a real terminal failure ("failed") still reads as hard_error.
+    if entry.actual.status == "pending":
+        return ReconciliationResult(
+            step_id=entry.step_id, match=False, mismatch_type="pending_unconfirmed"
+        )
     status_ok: bool = entry.actual.status == "settled"
     if not status_ok:
         return ReconciliationResult(

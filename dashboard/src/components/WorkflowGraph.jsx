@@ -16,6 +16,11 @@ const STATUS_STYLES = {
   success:     { bg: "#1a3320", border: "#3fb950", text: "#3fb950", icon: "✓" },
   failed:      { bg: "#2d1a1a", border: "#f85149", text: "#f85149", icon: "✗" },
   skipped:     { bg: "#2a2a2a", border: "#484f58", text: "#8b949e", icon: "—" },
+  // Phase 2/5/6 — a payout held at "pending" (non_terminal poll result, or
+  // Preset 2's forced demo hold) is genuinely unconfirmed, not a failure —
+  // same ⏳ language as the human_escalation_required banner. Distinct from
+  // both `pending` above (hasn't run yet) and `failed` (confirmed dead).
+  held:        { bg: "#332a14", border: "#d29922", text: "#d29922", icon: "⏳" },
 };
 
 // Feature D — confidence/"evaluating" flicker. While a node is in_progress
