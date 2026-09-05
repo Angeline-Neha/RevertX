@@ -43,11 +43,16 @@ from mock_merchants.registry import MERCHANT_URLS, MERCHANT_PAYEES
 from authorization.trace import authorize
 from authorization.wallet import get_wallet
 from authorization.policy import DEFAULT_POLICY_CONFIG
-from razorpayx.client import create_payout, poll_payout, reverse_payout
+from razorpayx.client import create_payout, poll_payout, reverse_payout, get_payout
 from mock_merchants.downstream_service import confirm_fulfillment
 
 RZP_DEMO_FUND_ACCOUNT_ID = os.getenv("RZP_DEMO_FUND_ACCOUNT_ID")
 RZP_SELF_FUND_ACCOUNT_ID = os.getenv("RZP_SELF_FUND_ACCOUNT_ID")
+# Phase 6 (Preset 2) — see the merchant_rzp_pending branch below. When true
+# (the default), merchant_rzp_pending skips the real poll loop and forces
+# its outcome to "pending" deterministically, the same reproducibility
+# reasoning as DOWNSTREAM_FORCE_FAIL (mock_merchants/downstream_service.py).
+RZP_PENDING_DEMO_FORCE = os.getenv("RZP_PENDING_DEMO_FORCE", "true").lower() == "true"
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6380"))
@@ -237,11 +242,18 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
         "merchant_id": merchant_id, "amount": amount, "payee": payee, "item": item
     })
 
-    if merchant_id == "merchant_rzp":
+    pending_payout_row_id: int | None = None  # Phase 5 — set below if this
+    # merchant_rzp payout polls to non_terminal; used after the transaction
+    # step is written to backfill its step_id for traceability.
+
+    if merchant_id in ("merchant_rzp", "merchant_rzp_pending"):
         # Real RazorpayX Test Mode payout — same response shape (status/
         # amount/payee/settlement_ref) as a mock merchant's /charge, so
         # every downstream step (budget commit, reconciliation, dashboard
         # events) works unchanged regardless of which path ran.
+        # merchant_rzp_pending (Phase 6 / Preset 2) reuses this exact same
+        # real-payout path — it's still real money moving in RazorpayX test
+        # mode, not a fake — only the classification below is forced.
         try:
             payout = await create_payout(
                 fund_account_id=RZP_DEMO_FUND_ACCOUNT_ID,
@@ -251,32 +263,48 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
                 narration=item[:30] if item else "Aegis payout",
             )
             payout_id = payout.get("id", "")
-            # Phase 2 — don't trust create_payout()'s own initial response;
-            # queued/processing are non-terminal (queued specifically means
-            # "not processed, nothing sent yet"), not evidence of a
-            # completed payout. Re-poll until processed/reversed/rejected/
-            # cancelled/failed, or until the poll window (RZP_POLL_* env
-            # vars, default 2s x 3 = 6s) is exhausted.
-            poll_result = await poll_payout(payout_id) if payout_id else None
-            rzp_status = poll_result.razorpay_status if poll_result else payout.get("status", "")
 
-            if poll_result and poll_result.classification == "processed":
-                merchant_status = "settled"
-            elif poll_result and poll_result.classification == "failed":
-                merchant_status = "failed"
-            elif poll_result and poll_result.classification == "non_terminal":
-                # Genuinely unknown, not a failure — do NOT mark settled or
-                # failed. See Preset 2's design: this should route to
-                # human_escalation_required (held for later resolution),
-                # not the compensation saga, which assumes a known failure.
-                # That routing is Phase 5 — for now this is surfaced as its
-                # own status so nothing downstream silently treats it as
-                # either a success or a known failure.
+            force_pending = merchant_id == "merchant_rzp_pending" and RZP_PENDING_DEMO_FORCE
+            if force_pending and payout_id:
+                # Phase 6 (Preset 2) — skip the real poll loop and force
+                # this deterministically to "pending" rather than trusting
+                # RazorpayX test-mode timing to actually still be queued/
+                # processing at the 6s mark (Preset 1's own rehearsal
+                # already showed test-mode payouts sometimes resolve to
+                # processed well inside that window — not reliable enough
+                # for a live demo). Still takes one real status snapshot
+                # for an honest event payload, just doesn't classify off it.
+                snapshot = await get_payout(payout_id)
+                rzp_status = snapshot.get("status", "")
                 merchant_status = "pending"
+                poll_attempts = 0
             else:
-                # payout_id missing from RazorpayX's own create response —
-                # can't poll at all, treat as failed rather than guess.
-                merchant_status = "failed"
+                # Phase 2 — don't trust create_payout()'s own initial
+                # response; queued/processing are non-terminal (queued
+                # specifically means "not processed, nothing sent yet"),
+                # not evidence of a completed payout. Re-poll until
+                # processed/reversed/rejected/cancelled/failed, or until
+                # the poll window (RZP_POLL_* env vars, default 2s x 3 =
+                # 6s) is exhausted.
+                poll_result = await poll_payout(payout_id) if payout_id else None
+                rzp_status = poll_result.razorpay_status if poll_result else payout.get("status", "")
+                poll_attempts = poll_result.attempts_made if poll_result else 0
+
+                if poll_result and poll_result.classification == "processed":
+                    merchant_status = "settled"
+                elif poll_result and poll_result.classification == "failed":
+                    merchant_status = "failed"
+                elif poll_result and poll_result.classification == "non_terminal":
+                    # Genuinely unknown, not a failure — do NOT mark
+                    # settled or failed. Routes to human_escalation_required
+                    # (Phase 5), not the compensation saga, which assumes a
+                    # known failure.
+                    merchant_status = "pending"
+                else:
+                    # payout_id missing from RazorpayX's own create
+                    # response — can't poll at all, treat as failed rather
+                    # than guess.
+                    merchant_status = "failed"
 
             merchant_data = {
                 "status": merchant_status,
@@ -285,20 +313,39 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
                 "settlement_ref": payout_id,
                 "razorpay_status": rzp_status,
                 "utr": payout.get("utr"),
-                "poll_attempts": poll_result.attempts_made if poll_result else 0,
+                "poll_attempts": poll_attempts,
             }
             status_code = 200
 
             if merchant_status == "pending":
+                reason = (
+                    f"Payout {payout_id} still '{rzp_status}' after "
+                    f"{poll_attempts} poll(s) — financial "
+                    "outcome unconfirmed, holding before any recovery action."
+                )
                 publish_event(wid, "payout_unconfirmed", {
                     "merchant_id": merchant_id, "payee": payee, "amount": amount,
                     "settlement_ref": payout_id, "razorpay_status": rzp_status,
-                    "poll_attempts": poll_result.attempts_made,
-                    "reason": (
-                        f"Payout {payout_id} still '{rzp_status}' after "
-                        f"{poll_result.attempts_made} poll(s) — financial "
-                        "outcome unconfirmed, holding before any recovery action."
-                    ),
+                    "poll_attempts": poll_attempts,
+                    "reason": reason,
+                })
+                # Phase 5 — persist it so pending_payout_worker.py's
+                # background loop has something durable to recheck (the
+                # event above is fire-and-forget over the websocket and
+                # nothing revisits it otherwise), and surface it through
+                # the same human_escalation_required banner the policy
+                # fail-safe path uses, distinguished by kind so the
+                # dashboard can render + auto-clear it differently.
+                pending_payout_row_id = await db.create_pending_payout(
+                    workflow_id=wid, merchant_id=merchant_id, payee=payee,
+                    amount=amount, currency=currency, payout_id=payout_id,
+                    step_id="", razorpay_status=rzp_status, reason=reason,
+                )
+                publish_event(wid, "human_escalation_required", {
+                    "workflow_id": wid, "kind": "payout_unconfirmed",
+                    "merchant_id": merchant_id, "settlement_ref": payout_id,
+                    "pending_payout_id": pending_payout_row_id, "reason": reason,
+                    "status": "auto_retry_in_progress",
                 })
             elif merchant_status == "settled":
                 # Phase 4 (Preset 3 flagship) — the payout is CONFIRMED
@@ -402,6 +449,18 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
     # 4. Budget Commit/Rollback
     if actual_status == "settled":
         await db.commit_budget(wid, amount, actual_amount)
+    elif actual_status == "pending":
+        # Phase 5 fix — a non_terminal merchant_rzp payout is NOT a known
+        # failure (that's the whole point of the "pending" bucket), so it
+        # must not release the budget reservation like a real failure
+        # would. Previously this fell into the `else: rollback_budget`
+        # branch, which freed the ₹ back to the workflow's budget while
+        # the real-money payout might still land as "processed" seconds
+        # later — silently letting the same ₹ be spent twice. The
+        # reservation now stays held until pending_payout_worker.py
+        # resolves it one way or the other (commit on settled, rollback
+        # on failed — see below).
+        pass
     else:
         await db.rollback_budget(wid, amount)
 
@@ -414,6 +473,9 @@ async def pay(req: PayRequest, background_tasks: BackgroundTasks):
     
     await db.write_transaction_step(entry.model_dump(), idem_key=idem_key)
     publish_event(wid, "step_written", entry.model_dump())
+
+    if pending_payout_row_id is not None:
+        await db.set_pending_payout_step_id(pending_payout_row_id, entry.step_id)
 
     # 6. Reconcile
     seen_refs = get_seen_settlement_refs(wid) - {settlement_ref}

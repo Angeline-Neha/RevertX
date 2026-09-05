@@ -56,6 +56,9 @@ Start-Job { param($r) Set-Location $r; python -m uvicorn proxy.mcp_proxy:app --p
 Write-Host "Starting Worker..."
 Start-Job { param($r) Set-Location $r; python -m compensating_agent.worker } -ArgumentList $root | Out-Null
 
+Write-Host "Starting Pending Payout Resolution Worker (Phase 5)..."
+Start-Job { param($r) Set-Location $r; python -m compensating_agent.pending_payout_worker } -ArgumentList $root | Out-Null
+
 Write-Host "Waiting for services to come up..."
 $maxWaitSeconds = 25
 $elapsed = 0

@@ -37,7 +37,13 @@ export default function App() {
   const [llmStream, setLlmStream] = useState("");
   const [mathLine, setMathLine] = useState(null);
   const [endState, setEndState] = useState(null);
-  const [escalation, setEscalation] = useState(null);  // Phase 10.2
+  const [escalation, setEscalation] = useState(null);  // Phase 10.2 (also carries Phase 5's payout_unconfirmed kind)
+  // Phase 5 — payouts pending_payout_worker.py gave up auto-resolving
+  // (still non_terminal after PENDING_PAYOUT_MAX_CHECKS rechecks). Distinct
+  // from `escalation`: this never auto-clears on a payout_resolved event
+  // (there isn't one — it's stuck), only on manual dismiss, since it
+  // genuinely needs a human to check the RazorpayX dashboard directly.
+  const [stuckPayouts, setStuckPayouts] = useState([]);
   const [budget, setBudget] = useState({ used: 0, limit: 0 });
   // Populated from authorization_trace's check_wallet_authority step —
   // null until the first /pay call runs authorize(), so WalletPanel falls
@@ -100,6 +106,7 @@ export default function App() {
     setMathLine(null);
     setEndState(null);
     setEscalation(null);
+    setStuckPayouts([]);
     setBudget({ used: 0, limit: 0 });
     setPaymentEvidence({});
     setCompensationEvidence({});
@@ -337,6 +344,44 @@ export default function App() {
         log(`⚠ HUMAN REVIEW REQUIRED — ${data.merchant_id}: ${data.reason}`);
         break;
 
+      // Phase 5 — pending_payout_worker.py resolved a payout that was
+      // stuck non_terminal. "settled" and "failed" are both legitimate,
+      // known outcomes at this point (Phase 2's poll_payout classified
+      // them for certain), so the escalation banner clears itself instead
+      // of waiting for a human — that's the "quietly clear" half of
+      // Phase 5's routing design.
+      case "payout_resolved":
+        log(
+          data.resolution === "settled"
+            ? `✅ PAYOUT RESOLVED — ${data.merchant_id} ${data.settlement_ref} confirmed processed, auto-cleared`
+            : `↩ PAYOUT RESOLVED — ${data.merchant_id} ${data.settlement_ref} came back '${data.razorpay_status}', budget released`
+        );
+        setNodeStates((prev) => ({
+          ...prev,
+          [data.merchant_id]: data.resolution === "settled" ? "settled" : "failed",
+        }));
+        setEscalation((prev) =>
+          prev && prev.kind === "payout_unconfirmed" && prev.pending_payout_id === data.pending_payout_id
+            ? null
+            : prev
+        );
+        break;
+
+      // Phase 5 — auto-retry exhausted PENDING_PAYOUT_MAX_CHECKS rechecks
+      // still non_terminal. This is the "hand off" half of Phase 5's
+      // routing design: auto-resolution has done what it can, so this
+      // gets its own persistent banner (not the dismissible escalation
+      // one) that only a human checking RazorpayX directly can clear.
+      case "payout_resolution_exhausted":
+        log(`🛑 PAYOUT NEEDS MANUAL REVIEW — ${data.merchant_id} ${data.settlement_ref} still '${data.razorpay_status}' after ${data.checks_done} auto-rechecks`);
+        setEscalation((prev) =>
+          prev && prev.kind === "payout_unconfirmed" && prev.pending_payout_id === data.pending_payout_id
+            ? null
+            : prev
+        );
+        setStuckPayouts((prev) => [...prev, data]);
+        break;
+
       // Phase 9.1 — Aegis was OFF when the budget limit fired. Money is
       // stranded with no compensation triggered — this is exactly what a
       // world without Aegis looks like.
@@ -516,18 +561,26 @@ export default function App() {
 
       <MetricsBar metrics={BATCH_METRICS} />
 
-      {/* Phase 10.2 — human escalation amber banner (policy fail-safe triggered) */}
+      {/* Phase 10.2 — human escalation amber banner (policy fail-safe), and
+          Phase 5's payout_unconfirmed kind reusing the same dismissible
+          slot while pending_payout_worker.py's auto-retry is in progress. */}
       {escalation && (
         <div
           className="absolute bottom-16 left-1/2 -translate-x-1/2 z-40 rounded-lg px-5 py-3 text-sm shadow-2xl flex items-start gap-3 max-w-lg"
           style={{ background: "#2a1f00", border: "1px solid #d29922", color: "#d29922" }}
         >
-          <span className="text-xl shrink-0">⚠️</span>
+          <span className="text-xl shrink-0">{escalation.kind === "payout_unconfirmed" ? "⏳" : "⚠️"}</span>
           <div>
-            <div className="font-semibold mb-0.5">Flagged for Human Review</div>
+            <div className="font-semibold mb-0.5">
+              {escalation.kind === "payout_unconfirmed" ? "Payout Unconfirmed — Auto-Resolving" : "Flagged for Human Review"}
+            </div>
             <div className="text-xs opacity-80">
-              Policy extraction failed for <strong>{escalation.merchant_id}</strong> — defaulted to non-refundable.
-              A human should verify whether a refund applies.
+              {escalation.kind === "payout_unconfirmed" ? (
+                <>Real payout for <strong>{escalation.merchant_id}</strong> is still unconfirmed — retrying automatically in the background.</>
+              ) : (
+                <>Policy extraction failed for <strong>{escalation.merchant_id}</strong> — defaulted to non-refundable.
+                A human should verify whether a refund applies.</>
+              )}
             </div>
             <div className="text-xs opacity-60 mt-1 font-mono break-all">{escalation.reason}</div>
           </div>
@@ -535,6 +588,34 @@ export default function App() {
             className="ml-auto shrink-0 opacity-60 hover:opacity-100"
             onClick={() => setEscalation(null)}
           >✕</button>
+        </div>
+      )}
+
+      {/* Phase 5 — persistent red banner for payouts auto-retry gave up on.
+          Unlike `escalation`, this never clears itself on a resolution
+          event (there won't be one); only manual dismiss removes it. */}
+      {stuckPayouts.length > 0 && (
+        <div className="absolute bottom-16 right-4 z-40 flex flex-col gap-2 max-w-sm">
+          {stuckPayouts.map((sp, i) => (
+            <div
+              key={`${sp.pending_payout_id}-${i}`}
+              className="rounded-lg px-5 py-3 text-sm shadow-2xl flex items-start gap-3"
+              style={{ background: "#2a0700", border: "1px solid #f85149", color: "#f85149" }}
+            >
+              <span className="text-xl shrink-0">🛑</span>
+              <div>
+                <div className="font-semibold mb-0.5">Payout Needs Manual Review</div>
+                <div className="text-xs opacity-80">
+                  <strong>{sp.merchant_id}</strong> ({sp.settlement_ref}) still '{sp.razorpay_status}' after {sp.checks_done} auto-rechecks.
+                  Check the RazorpayX dashboard directly.
+                </div>
+              </div>
+              <button
+                className="ml-auto shrink-0 opacity-60 hover:opacity-100"
+                onClick={() => setStuckPayouts((prev) => prev.filter((_, idx) => idx !== i))}
+              >✕</button>
+            </div>
+          ))}
         </div>
       )}
 

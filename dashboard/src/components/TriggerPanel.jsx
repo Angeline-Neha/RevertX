@@ -20,6 +20,12 @@ const PRESETS = [
   // the flaky print vendor — the one preset that actually exercises the
   // intermittent /policy failure it's named for.
   { label: "Flaky vendor", goal: "Book signage printing for our product launch banner, then register the event's domain and hosting", budget: 12000 },
+  // Phase 6 (Preset 2) — routes to merchant_rzp_pending (catalog.py), a
+  // real RazorpayX payout deterministically forced to stay pending
+  // (RZP_PENDING_DEMO_FORCE) so the payout_unconfirmed/human_escalation_
+  // required/pending_payout_worker.py path (Phase 5) has a one-click,
+  // reliably reproducible trigger instead of hand-typed goal text.
+  { label: "Reconciliation (pending)", goal: "Make a reconciliation test payout that should stay pending, not a normal vendor payment", budget: 15000 },
 ];
 
 // Fuzzy risk gauge (Feature A) — deliberately qualitative, never the exact

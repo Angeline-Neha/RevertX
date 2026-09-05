@@ -48,6 +48,22 @@ MERCHANT_CATALOG: list[CatalogEntry] = [
     # (±50%) inside both the wallet's per-txn limit and a realistic single
     # conference-registration-style payment.
     CatalogEntry("merchant_rzp", "RazorpayX Live Payout", "conference registration or vendor payment made as a real RazorpayX test-mode payout", 15000.0, "conference registration (real payout)"),
+    # Phase 6 (Preset 2) — same real RazorpayX payout path as merchant_rzp
+    # above, but mcp_proxy.py deterministically forces this one's poll
+    # classification to "non_terminal" (via RZP_PENDING_DEMO_FORCE) instead
+    # of trusting whatever RazorpayX test-mode timing happens to do. Exists
+    # so the payout_unconfirmed / pending_payout_worker.py path (Phase 5)
+    # has a reliably reproducible trigger for a live demo, the same way
+    # DOWNSTREAM_FORCE_FAIL makes Preset 3's reversal reproducible — sells
+    # text is deliberately distinct/verbose so the planner doesn't confuse
+    # it with plain merchant_rzp.
+    CatalogEntry(
+        "merchant_rzp_pending", "RazorpayX Live Payout (Reconciliation Test)",
+        "a real RazorpayX test-mode payout for a reconciliation or dispute-resolution demo, "
+        "deliberately left pending/processing/unconfirmed to test the uncertain-payout handling path — "
+        "NOT a normal conference registration or vendor payment",
+        15000.0, "reconciliation test payout (intentionally pending)",
+    ),
 ]
 
 # Fast lookup by id — planner.py validates every LLM-chosen merchant_id

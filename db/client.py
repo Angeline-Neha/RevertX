@@ -102,6 +102,36 @@ async def run_migrations() -> None:
             ALTER TABLE transaction_steps
                 ADD COLUMN IF NOT EXISTS action_type VARCHAR(50) DEFAULT 'payment';
         """)
+        # Phase 5 — durable home for a merchant_rzp payout that polled to
+        # "non_terminal" (still queued/processing after Phase 2's 6s
+        # window). A websocket event alone can't be revisited later — this
+        # table is what compensating_agent/pending_payout_worker.py scans
+        # on its own schedule to single-shot recheck each one via
+        # razorpayx.client.poll_payout(payout_id, max_attempts=0) until it
+        # reaches a terminal status or exhausts its retry budget.
+        # status: 'pending' (awaiting recheck) | 'resolved_settled' |
+        # 'resolved_failed' | 'exhausted' (retries exhausted, needs a human
+        # to check the RazorpayX dashboard directly).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS pending_payouts (
+                id SERIAL PRIMARY KEY,
+                workflow_id VARCHAR(255) NOT NULL,
+                merchant_id VARCHAR(255) NOT NULL,
+                payee VARCHAR(255),
+                amount FLOAT NOT NULL,
+                currency VARCHAR(10) DEFAULT 'INR',
+                payout_id VARCHAR(255) NOT NULL,
+                step_id VARCHAR(255),
+                razorpay_status VARCHAR(50),
+                checks_done INT NOT NULL DEFAULT 0,
+                status VARCHAR(50) NOT NULL DEFAULT 'pending',
+                reason TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                last_checked_at TIMESTAMP WITH TIME ZONE,
+                resolved_at TIMESTAMP WITH TIME ZONE
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_payouts_status ON pending_payouts(status);
+        """)
         # Agent Wallet — the AI agent's own financial authority, distinct
         # from the RazorpayX account balance. per_txn_limit/daily_limit are
         # policy inputs (set once, changed deliberately); spent_today/
@@ -424,6 +454,67 @@ async def increment_wallet_spend(agent_id: str, amount: float) -> None:
             "UPDATE agent_wallet SET spent_today = spent_today + $1 WHERE agent_id = $2",
             amount, agent_id
         )
+
+
+async def create_pending_payout(
+    workflow_id: str, merchant_id: str, payee: str, amount: float, currency: str,
+    payout_id: str, step_id: str, razorpay_status: str, reason: str,
+) -> int:
+    """Phase 5 — persists a merchant_rzp payout that came back non_terminal
+    from poll_payout(), so pending_payout_worker.py has something durable
+    to recheck later. Returns the new row's id."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            INSERT INTO pending_payouts
+                (workflow_id, merchant_id, payee, amount, currency, payout_id, step_id, razorpay_status, reason)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+        """, workflow_id, merchant_id, payee, amount, currency, payout_id, step_id, razorpay_status, reason)
+        return row["id"]
+
+
+async def set_pending_payout_step_id(payout_row_id: int, step_id: str) -> None:
+    """The TransactionLogEntry (and its step_id) isn't built until after the
+    pending_payouts row is created — this backfills the join key once it
+    exists, purely for traceability; the worker itself keys off payout_id."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE pending_payouts SET step_id = $2 WHERE id = $1", payout_row_id, step_id
+        )
+
+
+async def get_open_pending_payouts() -> list[dict]:
+    """Rows pending_payout_worker.py should still be rechecking — status
+    still 'pending' (not yet resolved_settled/resolved_failed/exhausted)."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM pending_payouts WHERE status = 'pending' ORDER BY created_at ASC"
+        )
+        return [dict(r) for r in rows]
+
+
+async def touch_pending_payout(payout_row_id: int, razorpay_status: str) -> int:
+    """Records one more recheck attempt without resolving it — still
+    non_terminal. Returns the updated checks_done count."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            UPDATE pending_payouts
+            SET checks_done = checks_done + 1, razorpay_status = $2, last_checked_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            RETURNING checks_done
+        """, payout_row_id, razorpay_status)
+        return row["checks_done"] if row else 0
+
+
+async def resolve_pending_payout(payout_row_id: int, status: str, razorpay_status: str) -> None:
+    """status: 'resolved_settled' | 'resolved_failed' | 'exhausted'."""
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE pending_payouts
+            SET status = $2, razorpay_status = $3, checks_done = checks_done + 1,
+                last_checked_at = CURRENT_TIMESTAMP, resolved_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+        """, payout_row_id, status, razorpay_status)
 
 
 async def get_session_metrics() -> dict:
